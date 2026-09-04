@@ -10,13 +10,15 @@ use Illuminate\Support\Str;
 use PHPUnit\Framework\Assert;
 use Watchtower\Laravel\Contracts\Ingest as IngestContract;
 use Watchtower\Laravel\Ingest;
+use Watchtower\Laravel\Transport\Frame;
+use Watchtower\Laravel\Transport\Protocol;
 
 use function collect;
 use function dd;
 use function dump;
-use function explode;
 use function is_array;
 use function json_decode;
+use function json_encode;
 use function str_contains;
 use function value;
 
@@ -140,14 +142,22 @@ class FakeIngest implements IngestContract
 
     public function writes(): Collection
     {
-        return $this->streams->map(function ($stream) {
-            return explode(':', $stream->value, 4)[3];
+        return $this->streams->map(static function ($stream) {
+            $messages = Frame::decodeAll($stream->value);
+
+            foreach ($messages as $message) {
+                if (($message['type'] ?? null) === Protocol::TYPE_TELEMETRY_BATCH) {
+                    return json_encode($message['records'] ?? [], flags: JSON_THROW_ON_ERROR);
+                }
+            }
+
+            return '[]';
         });
     }
 
     public function decodedWrites(): Collection
     {
-        return $this->writes()->map(function ($write) {
+        return $this->writes()->map(static function ($write) {
             return json_decode($write, true, flags: JSON_THROW_ON_ERROR);
         });
     }

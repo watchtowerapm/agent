@@ -9,6 +9,7 @@ use RuntimeException;
 use function call_user_func_array;
 use function is_string;
 use function strlen;
+use function substr;
 
 class FakeTcpStream
 {

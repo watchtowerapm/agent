@@ -2,6 +2,9 @@
 
 namespace Watchtower\LaravelAgent;
 
+use Throwable;
+
+use function array_shift;
 use function strlen;
 use function strpos;
 use function substr;
@@ -67,7 +70,7 @@ final class FrameBuffer
 
             try {
                 [$message, $consumed] = Frame::decodeOne($this->buffer, 0);
-            } catch (\Throwable) {
+            } catch (Throwable) {
                 return;
             }
 

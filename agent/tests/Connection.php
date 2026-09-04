@@ -10,6 +10,8 @@ use RuntimeException;
 use Watchtower\LaravelAgent\Frame;
 use Watchtower\LaravelAgent\Protocol;
 
+use function count;
+
 class Connection extends EventEmitter implements ConnectionInterface
 {
     public function __construct(
@@ -52,7 +54,9 @@ class Connection extends EventEmitter implements ConnectionInterface
 
         if ($expected->kind === 'error') {
             $messages = Frame::decodeAll($this->payload);
-            Assert::assertSame(Protocol::TYPE_ERROR, $messages[0]['type'] ?? null, $this->payload);
+            Assert::assertNotEmpty($messages);
+            $last = $messages[count($messages) - 1];
+            Assert::assertSame(Protocol::TYPE_ERROR, $last['type'] ?? null, $this->payload);
 
             return;
         }

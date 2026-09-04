@@ -15,13 +15,12 @@ use Tests\Timer;
 use function array_fill;
 use function gethostname;
 use function str_repeat;
-use function substr;
 
 class IngestTest extends TestCase
 {
     public function test_it_can_ingests_records(): void
     {
-        $loop = new LoopFake(runForSeconds: 1);
+        $loop = new LoopFake(runForSeconds: 11);
         $server = new TcpServerFake;
         $ingestDetailsBrowser = new BrowserFake([
             Response::jwt(),
@@ -29,7 +28,7 @@ class IngestTest extends TestCase
         $ingestBrowser = new BrowserFake([
             Response::ingested(),
         ]);
-        $records = array_fill(0, 375_001, ['t' => 'request']);
+        $records = array_fill(0, 500, ['t' => 'request']);
         $loop->addTimer(0, $server->pendingConnection($records));
 
         [$output, $e] = $this->runAgent(
@@ -61,6 +60,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),

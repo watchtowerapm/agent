@@ -28,4 +28,4 @@ From 2.0.0, the agent ↔ sidecar session is a Watchtower protocol, not Nightwat
 
 Handshake: HELLO → WELCOME (`session_id`, `max_batch`) → TELEMETRY_BATCH or PING → ACK.
 
-Auth on the socket is still a shared `token_hash` of the environment token. HMAC/session secrets can replace that without changing sensors.
+The sidecar enforces `session_id`, `sequence` (first command is `1`), `batch_version` (`1`), and `max_batch` (`500`). Auth on the socket is still a shared `token_hash` of the environment token. HMAC/session secrets can replace that without changing sensors.

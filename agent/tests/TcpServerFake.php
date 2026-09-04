@@ -6,10 +6,10 @@ use Evenement\EventEmitter;
 use PHPUnit\Framework\Assert;
 use React\Socket\ServerInterface;
 use RuntimeException;
-
 use Watchtower\LaravelAgent\Frame;
 use Watchtower\LaravelAgent\Protocol;
 
+use function count;
 use function is_string;
 
 class TcpServerFake extends EventEmitter implements ServerInterface
@@ -55,26 +55,30 @@ class TcpServerFake extends EventEmitter implements ServerInterface
     /**
      * @param  list<array<string, mixed>>  $records
      */
-    public static function batchFrame(array $records): string
-    {
+    public static function batchFrame(
+        array $records,
+        string $sessionId = 'sess_test',
+        int $batchVersion = Protocol::BATCH_VERSION,
+        int $sequence = 1,
+    ): string {
         return Frame::encode([
             'type' => Protocol::TYPE_TELEMETRY_BATCH,
             'protocol' => Protocol::NAME,
             'protocol_version' => Protocol::VERSION,
-            'batch_version' => Protocol::BATCH_VERSION,
-            'session_id' => 'sess_test',
-            'sequence' => 1,
+            'batch_version' => $batchVersion,
+            'session_id' => $sessionId,
+            'sequence' => $sequence,
             'records' => $records,
         ]);
     }
 
-    public static function pingFrame(): string
+    public static function pingFrame(string $sessionId = 'sess_test', int $sequence = 1): string
     {
         return Frame::encode([
             'type' => Protocol::TYPE_PING,
             'protocol_version' => Protocol::VERSION,
-            'session_id' => 'sess_test',
-            'sequence' => 1,
+            'session_id' => $sessionId,
+            'sequence' => $sequence,
         ]);
     }
 

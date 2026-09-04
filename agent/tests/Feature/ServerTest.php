@@ -10,6 +10,10 @@ use Tests\Response;
 use Tests\TcpServerFake;
 use Tests\TestCase;
 use Tests\Timer;
+use Watchtower\LaravelAgent\Frame;
+
+use function array_fill;
+use function count;
 
 class ServerTest extends TestCase
 {
@@ -283,5 +287,69 @@ class ServerTest extends TestCase
         ]);
         $ingestDetailsBrowser->assertPending([]);
         $ingestBrowser->assertPending([]);
+    }
+
+    public function test_it_rejects_a_mismatched_session_id(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).TcpServerFake::batchFrame([['t' => 'request']], sessionId: 'sess_wrong'),
+            'session_mismatch',
+        );
+    }
+
+    public function test_it_rejects_an_unexpected_sequence(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).TcpServerFake::batchFrame([['t' => 'request']], sequence: 2),
+            'sequence_mismatch',
+        );
+    }
+
+    public function test_it_rejects_an_unsupported_batch_version(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).TcpServerFake::batchFrame([['t' => 'request']], batchVersion: 99),
+            'unsupported_batch_version',
+        );
+    }
+
+    public function test_it_rejects_batches_larger_than_max_batch(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).TcpServerFake::batchFrame(array_fill(0, 501, ['t' => 'request'])),
+            'batch_too_large',
+        );
+    }
+
+    private function assertProtocolRejected(string $wire, string $code): void
+    {
+        $loop = new LoopFake(runForSeconds: 1);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([Response::jwt()]);
+        $ingestBrowser = new BrowserFake;
+
+        $loop->addTimer(0, $server->pendingConnection($wire));
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $server->assertHandled([
+            Connection::rejected(),
+        ]);
+        $server->assertOpen();
+        $messages = Frame::decodeAll($server->connections[0]->payload);
+        $this->assertNotEmpty($messages);
+        $last = $messages[count($messages) - 1];
+        $this->assertSame($code, $last['code'] ?? null);
+        $this->assertLogMatches(<<<'OUTPUT'
+            {date} {info} Authentication successful {duration}
+            OUTPUT, $output);
+        $ingestBrowser->assertSent([]);
     }
 }

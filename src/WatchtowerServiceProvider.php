@@ -92,8 +92,11 @@ use Watchtower\Laravel\Support\Uuid;
 
 use function class_exists;
 use function defined;
+use function dirname;
+use function file_get_contents;
 use function hash;
 use function microtime;
+use function rtrim;
 use function substr;
 
 /**

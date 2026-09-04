@@ -4,12 +4,15 @@ namespace Watchtower\Laravel;
 
 use Deprecated;
 use Illuminate\Contracts\Events\Dispatcher;
+use JsonException;
 use RuntimeException;
 use Watchtower\Laravel\Events\IngestingEvents;
 use Watchtower\Laravel\Transport\Frame;
 use Watchtower\Laravel\Transport\Protocol;
 
 use function call_user_func;
+use function count;
+use function is_int;
 use function is_string;
 use function json_encode;
 use function substr;
@@ -78,7 +81,7 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
 
     public function ping(): void
     {
-        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry): void {
+        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch): void {
             fwrite_all($stream, Frame::encode([
                 'type' => Protocol::TYPE_PING,
                 'protocol_version' => Protocol::VERSION,
@@ -139,7 +142,11 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
      */
     private function transmitRecords(array $records): void
     {
-        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry) use ($records): void {
+        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch) use ($records): void {
+            if (count($records) > $maxBatch) {
+                throw new RuntimeException("Batch exceeds max_batch [{$maxBatch}]");
+            }
+
             fwrite_all($stream, Frame::encode([
                 'type' => Protocol::TYPE_TELEMETRY_BATCH,
                 'protocol' => Protocol::NAME,
@@ -155,7 +162,7 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
     }
 
     /**
-     * @param  callable(resource, string, int, string): void  $then
+     * @param  callable(resource, string, int, string, int): void  $then
      */
     private function session(callable $then): void
     {
@@ -184,7 +191,14 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
             $sessionId = $welcome['session_id'] ?? '';
             $sessionId = is_string($sessionId) ? $sessionId : '';
 
-            $then($stream, $sessionId, 1, $carry);
+            if ($sessionId === '') {
+                throw new RuntimeException('Unexpected response from agent ['.json_encode($welcome).']');
+            }
+
+            $maxBatch = $welcome['max_batch'] ?? Protocol::MAX_BATCH;
+            $maxBatch = is_int($maxBatch) && $maxBatch > 0 ? $maxBatch : Protocol::MAX_BATCH;
+
+            $then($stream, $sessionId, 1, $carry, $maxBatch);
         } finally {
             fclose_safely($stream);
         }
@@ -217,7 +231,7 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
                     $carry = substr($carry, $end);
 
                     return $message;
-                } catch (RuntimeException|\JsonException) {
+                } catch (RuntimeException|JsonException) {
                     // Need more bytes.
                 }
             }

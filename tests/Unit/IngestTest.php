@@ -14,22 +14,23 @@ use Watchtower\Laravel\Facades\Watchtower;
 use Watchtower\Laravel\Transport\Frame;
 use Watchtower\Laravel\Transport\Protocol;
 
-use function array_fill;
+use function array_filter;
 use function array_key_exists;
 use function array_shift;
+use function array_values;
 use function call_user_func_array;
 use function collect;
+use function count;
 use function fclose;
 use function fopen;
 use function implode;
-use function json_encode;
+use function min;
 use function phpversion;
 use function report;
-use function str_repeat;
+use function str_split;
 use function stream_wrapper_register;
 use function stream_wrapper_unregister;
 use function strlen;
-use function str_split;
 use function substr;
 use function version_compare;
 
@@ -134,6 +135,9 @@ class IngestTest extends TestCase
         $this->assertSame(Protocol::TYPE_HELLO, $messages[0]['type']);
         $this->assertSame($tokenHash, $messages[0]['token_hash']);
         $this->assertSame(Protocol::TYPE_TELEMETRY_BATCH, $messages[1]['type']);
+        $this->assertSame('sess_test', $messages[1]['session_id']);
+        $this->assertSame(1, $messages[1]['sequence']);
+        $this->assertSame(Protocol::BATCH_VERSION, $messages[1]['batch_version']);
         $this->assertSame([FakeRecord::make()], $messages[1]['records']);
         $this->assertContains('stream_write', StreamWrapper::$events->pluck('type')->all());
         $this->assertContains('stream_read', StreamWrapper::$events->pluck('type')->all());

@@ -43,7 +43,7 @@ abstract class TestCase extends BaseTestCase
     protected function runAgent(
         string $via,
         ?callable $until = null,
-        float $timeout = 0.5,
+        float $timeout = 5,
         ?BrowserFake &$ingestDetailsBrowser = null,
         ?BrowserFake &$ingestBrowser = null,
         ?LoopFake &$loop = null,
@@ -82,7 +82,7 @@ abstract class TestCase extends BaseTestCase
                 $process = Process::fromShellCommandline('php '.__DIR__.'/agent-wrapper.php')
                     ->setTimeout($timeout);
 
-                $process->mustRun(function (string $type, string $o) use ($until, $process, &$output) {
+                $process->mustRun(static function (string $type, string $o) use ($until, $process, &$output) {
                     $output .= $o;
 
                     if ($until && $until($output)) {

@@ -3,10 +3,13 @@
 namespace Tests\Integration;
 
 use Symfony\Component\Process\Process;
+use Tests\BrowserFake;
+use Tests\Response;
 use Tests\TestCase;
 
 use function fclose;
 use function fsockopen;
+use function is_string;
 use function str_contains;
 
 class HealthCheckTest extends TestCase
@@ -27,8 +30,12 @@ class HealthCheckTest extends TestCase
             break;
         }
 
+        $token = $_SERVER['WATCHTOWER_TOKEN'] ?? '';
+        $token = is_string($token) ? $token : '';
+
         $process = Process::fromShellCommandline('php '.__DIR__.'/../../watchtower-status', env: [
             'WATCHTOWER_INGEST_URI' => '127.0.0.1:'.$port,
+            'WATCHTOWER_TOKEN' => $token,
         ])->setTimeout(2);
 
         $process->run();
@@ -42,15 +49,29 @@ class HealthCheckTest extends TestCase
     {
         $process = Process::fromShellCommandline('php '.__DIR__.'/../../watchtower-status')
             ->setTimeout(2);
-        [$output, $e] = $this->runAgent(via: 'phar', timeout: 10, until: function ($output) use ($process, &$listenOn) {
-            if (str_contains($output, 'Authentication')) {
-                $process->run(env: ['WATCHTOWER_INGEST_URI' => $listenOn]);
+        $ingestDetailsBrowser = new BrowserFake([Response::jwt()]);
 
-                return true;
-            }
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            timeout: 10,
+            until: static function ($output) use ($process, &$listenOn) {
+                if (str_contains($output, 'Authentication successful')) {
+                    $token = $_SERVER['WATCHTOWER_TOKEN'] ?? '';
+                    $token = is_string($token) ? $token : '';
 
-            return false;
-        }, listenOn: $listenOn);
+                    $process->run(env: [
+                        'WATCHTOWER_INGEST_URI' => $listenOn,
+                        'WATCHTOWER_TOKEN' => $token,
+                    ]);
+
+                    return true;
+                }
+
+                return false;
+            },
+            listenOn: $listenOn,
+        );
 
         $this->assertSame(0, $process->getExitCode());
         $this->assertMatchesRegularExpression("/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[INFO\] The Watchtower agent is running and accepting connections$/", $process->getOutput());

@@ -7,6 +7,7 @@ use RuntimeException;
 use function json_decode;
 use function json_encode;
 use function strlen;
+use function strpos;
 use function substr;
 
 /**
