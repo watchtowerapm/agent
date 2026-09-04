@@ -26,6 +26,9 @@ final class FrameBuffer
         $this->drain();
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
     public function shift(): ?array
     {
         if ($this->messages === []) {

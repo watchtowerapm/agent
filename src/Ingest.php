@@ -10,6 +10,7 @@ use Watchtower\Laravel\Transport\Frame;
 use Watchtower\Laravel\Transport\Protocol;
 
 use function call_user_func;
+use function is_string;
 use function json_encode;
 use function substr;
 use function WatchtowerAgent\fclose_safely;
@@ -27,8 +28,6 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
     private bool $shouldDigestWhenBufferIsFull = true;
 
     private bool $ingesting = false;
-
-    private int $sequence = 0;
 
     /**
      * @param  (callable(string $address, float $timeout): resource)  $streamFactory
@@ -69,7 +68,7 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
             return;
         }
 
-        $this->transmit(Payload::json([$record], $this->tokenHash));
+        $this->transmitRecords([$record]);
     }
 
     public function flush(): void
@@ -79,7 +78,16 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
 
     public function ping(): void
     {
-        $this->transmit(Payload::text('PING', $this->tokenHash));
+        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry): void {
+            fwrite_all($stream, Frame::encode([
+                'type' => Protocol::TYPE_PING,
+                'protocol_version' => Protocol::VERSION,
+                'session_id' => $sessionId,
+                'sequence' => $sequence,
+            ]));
+
+            $this->assertAck($this->readFrame($stream, $carry), $sequence);
+        });
     }
 
     #[Deprecated('Use shouldDigestWhenBufferIsFull instead')]
@@ -105,7 +113,7 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
             return;
         }
 
-        $this->transmit($this->buffer->pull($this->tokenHash));
+        $this->transmitRecords($this->buffer->pull());
     }
 
     /**
@@ -126,83 +134,81 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
         }
     }
 
-    private function transmit(Payload $payload): void
+    /**
+     * @param  list<array<mixed>>  $records
+     */
+    private function transmitRecords(array $records): void
+    {
+        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry) use ($records): void {
+            fwrite_all($stream, Frame::encode([
+                'type' => Protocol::TYPE_TELEMETRY_BATCH,
+                'protocol' => Protocol::NAME,
+                'protocol_version' => Protocol::VERSION,
+                'batch_version' => Protocol::BATCH_VERSION,
+                'session_id' => $sessionId,
+                'sequence' => $sequence,
+                'records' => $records,
+            ]));
+
+            $this->assertAck($this->readFrame($stream, $carry), $sequence);
+        });
+    }
+
+    /**
+     * @param  callable(resource, string, int, string): void  $then
+     */
+    private function session(callable $then): void
     {
         $stream = $this->createStream();
 
         try {
             $this->configureStreamTimeout($stream);
 
-            fwrite_all($stream, Frame::encode($this->hello()));
+            fwrite_all($stream, Frame::encode([
+                'type' => Protocol::TYPE_HELLO,
+                'protocol' => Protocol::NAME,
+                'protocol_version' => Protocol::VERSION,
+                'agent_version' => $this->agentVersion,
+                'sdk' => 'laravel',
+                'php_version' => PHP_VERSION,
+                'token_hash' => $this->tokenHash,
+            ]));
 
             $carry = '';
-            $welcome = $this->readMessage($stream, $carry);
+            $welcome = $this->readFrame($stream, $carry);
 
             if (($welcome['type'] ?? null) !== Protocol::TYPE_WELCOME || ($welcome['accepted'] ?? false) !== true) {
                 throw new RuntimeException('Unexpected response from agent ['.json_encode($welcome).']');
             }
 
-            $sessionId = (string) ($welcome['session_id'] ?? '');
-            $sequence = ++$this->sequence;
+            $sessionId = $welcome['session_id'] ?? '';
+            $sessionId = is_string($sessionId) ? $sessionId : '';
 
-            fwrite_all($stream, Frame::encode($this->command($payload, $sessionId, $sequence)));
-
-            $ack = $this->readMessage($stream, $carry);
-
-            if (($ack['type'] ?? null) !== Protocol::TYPE_ACK) {
-                throw new RuntimeException('Unexpected response from agent ['.json_encode($ack).']');
-            }
+            $then($stream, $sessionId, 1, $carry);
         } finally {
             fclose_safely($stream);
         }
     }
 
     /**
-     * @return array<string, mixed>
+     * @param  array<string, mixed>  $ack
      */
-    private function hello(): array
+    private function assertAck(array $ack, int $sequence): void
     {
-        return [
-            'type' => Protocol::TYPE_HELLO,
-            'protocol' => Protocol::NAME,
-            'protocol_version' => Protocol::VERSION,
-            'agent_version' => $this->agentVersion,
-            'sdk' => 'laravel',
-            'php_version' => PHP_VERSION,
-            'token_hash' => $this->tokenHash,
-        ];
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function command(Payload $payload, string $sessionId, int $sequence): array
-    {
-        if ($payload->isPing()) {
-            return [
-                'type' => Protocol::TYPE_PING,
-                'protocol_version' => Protocol::VERSION,
-                'session_id' => $sessionId,
-                'sequence' => $sequence,
-            ];
+        if (
+            ($ack['type'] ?? null) !== Protocol::TYPE_ACK
+            || ($ack['sequence'] ?? null) !== $sequence
+            || ($ack['rejected'] ?? null) !== 0
+        ) {
+            throw new RuntimeException('Unexpected response from agent ['.json_encode($ack).']');
         }
-
-        return [
-            'type' => Protocol::TYPE_TELEMETRY_BATCH,
-            'protocol' => Protocol::NAME,
-            'protocol_version' => Protocol::VERSION,
-            'batch_version' => Protocol::BATCH_VERSION,
-            'session_id' => $sessionId,
-            'sequence' => $sequence,
-            'records' => $payload->records(),
-        ];
     }
 
     /**
      * @param  resource  $stream
      * @return array<string, mixed>
      */
-    private function readMessage($stream, string &$carry): array
+    private function readFrame($stream, string &$carry): array
     {
         for ($i = 0; $i < 8192; $i++) {
             if ($carry !== '') {

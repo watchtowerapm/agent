@@ -51,17 +51,16 @@ final class RecordsBuffer implements Countable
         return $this->records;
     }
 
-    public function pull(string $tokenHash): Payload
+    /**
+     * @return list<array<mixed>>
+     */
+    public function pull(): array
     {
-        if ($this->records === []) {
-            return Payload::json([], $tokenHash);
-        }
-
         $records = $this->records;
 
         $this->flush();
 
-        return Payload::json($records, $tokenHash);
+        return $records;
     }
 
     public function flush(): void

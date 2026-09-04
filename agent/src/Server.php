@@ -9,6 +9,9 @@ use Throwable;
 
 use function bin2hex;
 use function call_user_func;
+use function count;
+use function is_array;
+use function is_int;
 use function json_encode;
 use function random_bytes;
 
@@ -90,7 +93,7 @@ class Server
                     }
 
                     if ($type === Protocol::TYPE_PING) {
-                        $this->ack($connection, (int) ($message['sequence'] ?? 0), 0);
+                        $this->ack($connection, $this->intField($message, 'sequence'), 0);
                         $closedByUs = true;
 
                         return;
@@ -100,7 +103,7 @@ class Server
                         $records = $message['records'] ?? [];
                         $recordsJson = json_encode($records, flags: JSON_THROW_ON_ERROR);
                         $accepted = is_array($records) ? count($records) : 0;
-                        $this->ack($connection, (int) ($message['sequence'] ?? 0), $accepted);
+                        $this->ack($connection, $this->intField($message, 'sequence'), $accepted);
                         $closedByUs = true;
 
                         return;
@@ -143,7 +146,17 @@ class Server
     private function protocolIsValid(array $message): bool
     {
         return ($message['protocol'] ?? null) === Protocol::NAME
-            && (int) ($message['protocol_version'] ?? 0) === Protocol::VERSION;
+            && $this->intField($message, 'protocol_version') === Protocol::VERSION;
+    }
+
+    /**
+     * @param  array<string, mixed>  $message
+     */
+    private function intField(array $message, string $key): int
+    {
+        $value = $message[$key] ?? 0;
+
+        return is_int($value) ? $value : 0;
     }
 
     private function ack(ConnectionInterface $connection, int $sequence, int $accepted): void

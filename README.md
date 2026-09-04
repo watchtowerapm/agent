@@ -48,7 +48,7 @@ Upstream version used as the initial basis:
 
 `laravel/nightwatch` v1.30.0
 
-Subsequent Watchtower-specific modifications include configuration, destination, authentication against a Watchtower instance, branding, and the Watchtower agent ↔ sidecar protocol (HELLO / WELCOME / telemetry_batch / ACK).
+Subsequent Watchtower-specific modifications include transport protocol, configuration, destination, authentication against a Watchtower instance, and branding.
 
 ## License
 

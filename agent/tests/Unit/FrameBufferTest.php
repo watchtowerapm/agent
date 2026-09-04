@@ -23,6 +23,7 @@ class FrameBufferTest extends TestCase
 
         $message = $buffer->shift();
 
+        $this->assertNotNull($message);
         $this->assertSame(Protocol::TYPE_HELLO, $message['type']);
         $this->assertSame('a1b2c3d', $message['token_hash']);
         $this->assertTrue($buffer->isEmpty());
@@ -38,7 +39,9 @@ class FrameBufferTest extends TestCase
         $this->assertFalse($buffer->isEmpty());
 
         $buffer->append(substr($wire, 3));
-        $this->assertSame(Protocol::TYPE_PING, $buffer->shift()['type']);
+        $ping = $buffer->shift();
+        $this->assertNotNull($ping);
+        $this->assertSame(Protocol::TYPE_PING, $ping['type']);
         $this->assertTrue($buffer->isEmpty());
     }
 
@@ -53,6 +56,8 @@ class FrameBufferTest extends TestCase
         $hello = $buffer->shift();
         $ping = $buffer->shift();
 
+        $this->assertNotNull($hello);
+        $this->assertNotNull($ping);
         $this->assertSame(Protocol::TYPE_HELLO, $hello['type']);
         $this->assertSame(Protocol::TYPE_PING, $ping['type']);
         $this->assertSame(4, $ping['sequence']);

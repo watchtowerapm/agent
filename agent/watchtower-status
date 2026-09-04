@@ -2,43 +2,68 @@
 
 namespace WatchtowerAgent;
 
-require __DIR__.'/helpers.php';
+require __DIR__.'/vendor/autoload.php';
 
 use RuntimeException;
 use Throwable;
+use Watchtower\LaravelAgent\Frame;
+use Watchtower\LaravelAgent\Protocol;
 
 use function date;
 use function hash;
-use function WatchtowerAgent\fclose_safely;
-use function WatchtowerAgent\fread_all;
-use function WatchtowerAgent\fwrite_all;
-use function WatchtowerAgent\stream_configure_read_timeout;
+use function is_resource;
+use function is_string;
+use function json_encode;
 use function stream_socket_client;
-use function strlen;
 use function substr;
 
 /*
  * Helpers...
  */
 
-$waitForAcknowledgment = function ($stream) {
-    /** @var resource $stream */
-    $response = fread_all($stream, 4);
-
-    if ($response !== '2:OK') {
-        throw new RuntimeException("Unexpected response from agent [{$response}]");
+/**
+ * @param  resource  $stream
+ * @return array<string, mixed>
+ */
+$readFrame = static function ($stream): array {
+    if (! is_resource($stream)) {
+        throw new RuntimeException('Expected stream resource');
     }
+
+    $carry = '';
+
+    for ($i = 0; $i < 8192; $i++) {
+        if ($carry !== '') {
+            try {
+                [$message] = Frame::decodeOne($carry, 0);
+
+                return $message;
+            } catch (RuntimeException) {
+                // Need more bytes.
+            }
+        }
+
+        $chunk = fread_chunk($stream, 8192);
+
+        if ($chunk === '') {
+            throw new RuntimeException("Unexpected response from agent [{$carry}]");
+        }
+
+        $carry .= $chunk;
+    }
+
+    throw new RuntimeException("Unexpected response from agent [{$carry}]");
 };
 
-$info = function (string $message): void {
+$info = static function (string $message): void {
     fwrite_all(STDOUT, date('Y-m-d H:i:s').' [INFO] '.$message.PHP_EOL);
 };
 
-$error = function (string $message): void {
+$error = static function (string $message): void {
     fwrite_all(STDERR, date('Y-m-d H:i:s').' [ERROR] '.$message.PHP_EOL);
 };
 
-$bail = function (string $message) use ($error): never {
+$bail = static function (string $message) use ($error): never {
     $error($message);
 
     exit(1);
@@ -81,18 +106,45 @@ try {
     }
 
     /*
-     * PING the agent...
+     * HELLO + PING the agent...
      */
 
-    $payload = 'v1:'.substr(hash('xxh128', $refreshToken), 0, 7).':PING';
-    $payload = strlen($payload).':'.$payload;
+    $tokenHash = substr(hash('xxh128', $refreshToken), 0, 7);
 
     try {
         stream_configure_read_timeout($stream, $timeout);
 
-        fwrite_all($stream, $payload);
+        fwrite_all($stream, Frame::encode([
+            'type' => Protocol::TYPE_HELLO,
+            'protocol' => Protocol::NAME,
+            'protocol_version' => Protocol::VERSION,
+            'token_hash' => $tokenHash,
+        ]));
 
-        $waitForAcknowledgment($stream);
+        $welcome = $readFrame($stream);
+
+        if (($welcome['type'] ?? null) !== Protocol::TYPE_WELCOME || ($welcome['accepted'] ?? false) !== true) {
+            throw new RuntimeException('Unexpected response from agent ['.json_encode($welcome).']');
+        }
+
+        $sessionId = $welcome['session_id'] ?? '';
+
+        fwrite_all($stream, Frame::encode([
+            'type' => Protocol::TYPE_PING,
+            'protocol_version' => Protocol::VERSION,
+            'session_id' => is_string($sessionId) ? $sessionId : '',
+            'sequence' => 1,
+        ]));
+
+        $ack = $readFrame($stream);
+
+        if (
+            ($ack['type'] ?? null) !== Protocol::TYPE_ACK
+            || ($ack['sequence'] ?? null) !== 1
+            || ($ack['rejected'] ?? null) !== 0
+        ) {
+            throw new RuntimeException('Unexpected response from agent ['.json_encode($ack).']');
+        }
     } finally {
         fclose_safely($stream);
     }
