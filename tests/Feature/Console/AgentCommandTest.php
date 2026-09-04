@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Process;
 use RuntimeException;
 use Tests\TestCase;
 
+use function getenv;
 use function sleep;
 use function str_contains;
 
@@ -14,6 +15,12 @@ class AgentCommandTest extends TestCase
 {
     public function test_it_can_run_the_agent_command(): void
     {
+        $baseUrl = (string) ($_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: '');
+
+        if ($baseUrl === '' || str_contains($baseUrl, 'watchtower.test')) {
+            $this->markTestSkipped('Requires a reachable Watchtower instance (WATCHTOWER_BASE_URL).');
+        }
+
         $output = '';
         $process = Process::timeout(10)->start('vendor/bin/testbench watchtower:agent');
 

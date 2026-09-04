@@ -212,6 +212,7 @@ jobs:
         options: --entrypoint redis-server
 
     strategy:
+      fail-fast: false
       matrix:
         php: [8.2, 8.3, 8.4, 8.5]
         laravel: [10, 11, 12, 13]
@@ -274,6 +275,7 @@ jobs:
         working-directory: ./agent
 
     strategy:
+      fail-fast: false
       matrix:
         php: [8.2, 8.3, 8.4, 8.5]
 
@@ -316,16 +318,29 @@ jobs:
         run: vendor/bin/phpunit --order-by=random --coverage-text --show-uncovered-for-coverage-text
 
       - name: Build and test container
+        env:
+          WATCHTOWER_TOKEN: fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ
+          WATCHTOWER_BASE_URL: https://watchtower.test
         run: |
-          # Build and run the container
           docker build -f Dockerfile -t agent ../
-          docker run --rm -d --name agent agent:latest
+          docker run --rm -d --name agent \
+            --env WATCHTOWER_TOKEN \
+            --env WATCHTOWER_BASE_URL \
+            agent:latest
 
-          # Test health check passes
-          docker exec --env WATCHTOWER_TOKEN=fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ agent php watchtower-status || exit 1
+          status=1
+          for i in $(seq 1 20); do
+            if docker exec --env WATCHTOWER_TOKEN agent php watchtower-status; then
+              status=0
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$status" -ne 0 ]; then
+            docker logs agent || true
+            exit 1
+          fi
 
-          # Test health check fails
-          ! docker exec --env WATCHTOWER_TOKEN=fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ --env WATCHTOWER_INGEST_URI=127.0.0.1:1234 agent php watchtower-status || exit 1
+          ! docker exec --env WATCHTOWER_TOKEN --env WATCHTOWER_INGEST_URI=127.0.0.1:1234 agent php watchtower-status || exit 1
 
-          # Stop the container
           docker stop agent
