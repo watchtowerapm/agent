@@ -1,0 +1,15 @@
+/.box_dump
+/.env.testing
+/.phpunit.result.cache
+/.pint.cache
+/.pint.ci.cache
+/box.json
+/node_modules
+/phpstan.neon
+/phpunit.xml
+/tests/test-payload
+/vendor
+/build/*
+!/build/agent.phar
+!/build/signature.txt
+

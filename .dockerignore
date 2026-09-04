@@ -1,0 +1,9 @@
+.git
+.github
+tests
+agent/tests
+workbench
+vendor
+agent/vendor
+agent/build
+resources

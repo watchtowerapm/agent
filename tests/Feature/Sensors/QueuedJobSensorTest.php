@@ -1,0 +1,388 @@
+<?php
+
+namespace Tests\Feature\Sensors;
+
+use Carbon\CarbonImmutable;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Queue\Attributes\Queue;
+use Illuminate\Queue\Events\JobQueued;
+use Illuminate\Queue\Events\JobQueueing;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Route;
+use Ramsey\Uuid\Uuid;
+use ReflectionClass;
+use ReflectionNamedType;
+use Tests\TestCase;
+use Watchtower\Laravel\Compatibility;
+
+use function array_shift;
+use function class_exists;
+use function hash;
+use function json_decode;
+use function now;
+use function version_compare;
+
+class QueuedJobSensorTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        $this->forceRequestExecutionState();
+
+        parent::setUp();
+
+        $this->setDeploy('v1.2.3');
+        $this->setServerName('web-01');
+        $this->setPeakMemory(1234);
+        $this->setTraceId('00000000-0000-0000-0000-000000000000');
+        $this->setExecutionId('00000000-0000-0000-0000-000000000001');
+        $this->setExecutionStart(CarbonImmutable::parse('2000-01-01 01:02:03.456789'));
+    }
+
+    public function test_it_can_ingest_queued_jobs(): void
+    {
+        $ingest = $this->fakeIngest();
+        $this->prependListener(QueryExecuted::class, function (QueryExecuted $event) {
+            if (! RefreshDatabaseState::$migrated) {
+                return false;
+            }
+
+            $event->time = 5.2;
+
+            $this->travelTo(now()->addMicroseconds(5200));
+        });
+        Route::post('/users', function (): void {
+            $this->core->uuid->uuidResolver = fn () => '00000000-0000-0000-0000-000000000000';
+            MyJob::dispatch();
+        });
+
+        $response = $this->post('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.jobs_queued', 1);
+        $ingest->assertLatestWrite('queued-job:*', [
+            [
+                'v' => 1,
+                't' => 'queued-job',
+                'timestamp' => 946688523.461989,
+                'deploy' => 'v1.2.3',
+                'server' => 'web-01',
+                '_group' => hash('xxh128', 'Tests\Feature\Sensors\MyJob'),
+                'trace_id' => '00000000-0000-0000-0000-000000000000',
+                'execution_source' => 'request',
+                'execution_id' => '00000000-0000-0000-0000-000000000001',
+                'execution_preview' => 'POST /users',
+                'execution_stage' => 'action',
+                'user' => '',
+                'job_id' => '00000000-0000-0000-0000-000000000000',
+                'name' => 'Tests\Feature\Sensors\MyJob',
+                'connection' => 'database',
+                'queue' => Compatibility::$queueNameCapturable ? 'default' : '',
+                'duration' => Compatibility::$queuedJobDurationCapturable ? 5200 : 0,
+            ],
+        ]);
+    }
+
+    public function test_it_falls_back_to_the_connections_default_queue(): void
+    {
+        $this->markTestSkippedWhen(! Compatibility::$queueNameCapturable, 'Requires a more recent framework version');
+
+        $ingest = $this->fakeIngest();
+        Config::set('queue.connections.database.queue', 'connection-default');
+        Route::post('/users', function (): void {
+            MyJob::dispatch();
+        });
+
+        $response = $this->post('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:0.queue', 'connection-default');
+    }
+
+    public function test_it_does_not_ingest_jobs_dispatched_on_the_sync_queue(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::post('/users', function (): void {
+            MyJob::dispatchSync();
+            MyJob::dispatch()->onConnection('sync');
+            Bus::dispatchNow(new MyJob);
+            Bus::dispatchSync(new MyJob);
+            Bus::dispatch((new MyJob)->onConnection('sync'));
+        });
+
+        $response = $this->post('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:*', []);
+    }
+
+    public function test_it_captures_queued_event_queue_name(): void
+    {
+        $this->markTestSkippedWhen(! Compatibility::$queueNameCapturable, 'Requires a more recent framework version');
+
+        $ingest = $this->fakeIngest();
+        $this->prependListener(QueryExecuted::class, function (QueryExecuted $event) {
+            if (! RefreshDatabaseState::$migrated) {
+                return false;
+            }
+        });
+
+        Route::post('/users', function (): void {
+            Event::listen('my-event', MyListenerWithCustomQueue::class);
+            Event::listen(MyQueuedJobEvent::class, MyListenerWithCustomQueue::class);
+            Event::listen(MyQueuedJobEvent::class, MyListenerWithViaQueue::class);
+            Event::dispatch('my-event');
+            Event::dispatch(new MyQueuedJobEvent);
+        });
+
+        $response = $this->post('/users');
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:0.queue', 'custom_queue');
+        $ingest->assertLatestWrite('queued-job:1.queue', 'custom_queue');
+        $ingest->assertLatestWrite('queued-job:2.queue', 'custom_queue');
+    }
+
+    public function test_it_captures_queued_mail(): void
+    {
+        $ingest = $this->fakeIngest();
+        $this->prependListener(QueryExecuted::class, function (QueryExecuted $event) {
+            if (! RefreshDatabaseState::$migrated) {
+                return false;
+            }
+        });
+
+        Route::post('/users', function (): void {
+            $this->core->uuid->uuidResolver = fn () => '00000000-0000-0000-0000-000000000002';
+            Mail::to('tim@laravel.com')->queue(new MyQueuedMail);
+        });
+
+        $response = $this->post('/users');
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:0', [
+            'v' => 1,
+            't' => 'queued-job',
+            'timestamp' => 946688523.456789,
+            'deploy' => 'v1.2.3',
+            'server' => 'web-01',
+            '_group' => hash('xxh128', 'Tests\Feature\Sensors\MyQueuedMail'),
+            'trace_id' => '00000000-0000-0000-0000-000000000000',
+            'execution_source' => 'request',
+            'execution_id' => '00000000-0000-0000-0000-000000000001',
+            'execution_preview' => 'POST /users',
+            'execution_stage' => 'action',
+            'user' => '',
+            'job_id' => '00000000-0000-0000-0000-000000000002',
+            'name' => 'Tests\Feature\Sensors\MyQueuedMail',
+            'connection' => 'database',
+            'queue' => Compatibility::$queueNameCapturable ? 'default' : '',
+            'duration' => 0,
+        ]);
+    }
+
+    public function test_it_normalizes_sqs_queue_names(): void
+    {
+        $this->markTestSkippedWhen(! Compatibility::$queueNameCapturable, 'Requires a more recent framework version');
+
+        $ingest = $this->fakeIngest();
+        Config::set('queue.connections.my-sqs-queue', [
+            'driver' => 'sqs',
+            'prefix' => 'https://sqs.us-east-1.amazonaws.com/your-account-id',
+            'queue' => 'queue-name',
+            'suffix' => '-production',
+        ]);
+
+        $this->core->sensor->queuedJob(new JobQueueing(
+            connectionName: 'my-sqs-queue',
+            queue: 'https://sqs.us-east-1.amazonaws.com/your-account-id/queue-name-production',
+            job: 'Tests\Feature\Sensors\MyJobClass',
+            payload: '{"uuid":"00000000-0000-0000-0000-000000000000"}',
+            delay: 0,
+        ));
+
+        $this->core->ingest->write($this->core->sensor->queuedJob(new JobQueued(
+            connectionName: 'my-sqs-queue',
+            queue: 'https://sqs.us-east-1.amazonaws.com/your-account-id/queue-name-production',
+            id: Uuid::uuid4()->toString(),
+            job: 'Tests\Feature\Sensors\MyJobClass',
+            payload: '{"uuid":"00000000-0000-0000-0000-000000000000"}',
+            delay: 0,
+        ))[1]());
+        $ingest->digest();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:0.queue', 'queue-name');
+    }
+
+    public function test_it_handles_missing_queue_value(): void
+    {
+        $this->markTestSkippedWhen(! Compatibility::$queueNameCapturable, 'Requires a more recent framework version');
+        $ingest = $this->fakeIngest();
+        $this->prependListener(QueryExecuted::class, function (QueryExecuted $event) {
+            if (! RefreshDatabaseState::$migrated) {
+                return false;
+            }
+        });
+        Route::post('/users', function (): void {
+            MyJob::dispatch();
+            MyJob::dispatch()->onQueue('foobar');
+        });
+
+        $response = $this->post('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:0.queue', 'default');
+        $ingest->assertLatestWrite('queued-job:1.queue', 'foobar');
+    }
+
+    public function test_it_gives_unique_job_ids_to_each_dispatched_job_with_a_request(): void
+    {
+        $ingest = $this->fakeIngest();
+        $uuids = [
+            'e49c749c-4f1a-42c3-a5de-3a7a36a2f730',
+            '8c796368-b5ee-49b3-b02c-f883b8c6c6f8',
+            'aeadd430-44e6-4b79-a441-02459d797f3a',
+        ];
+        $this->core->uuid->uuidResolver = function () use (&$uuids) {
+            return array_shift($uuids) ?? Uuid::uuid4();
+        };
+        Route::get('/test', function () {
+            MyJob::dispatch();
+            MyJob::dispatch();
+            MyJob::dispatch();
+        });
+
+        $response = $this->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:0.job_id', 'e49c749c-4f1a-42c3-a5de-3a7a36a2f730');
+        $ingest->assertLatestWrite('queued-job:1.job_id', '8c796368-b5ee-49b3-b02c-f883b8c6c6f8');
+        $ingest->assertLatestWrite('queued-job:2.job_id', 'aeadd430-44e6-4b79-a441-02459d797f3a');
+        $jobIdsInDatabase = DB::table('jobs')->orderBy('id')->get()->map(fn ($job) => json_decode($job->payload)->nightwatch->job_id)->all();
+        $this->assertSame([
+            'e49c749c-4f1a-42c3-a5de-3a7a36a2f730',
+            '8c796368-b5ee-49b3-b02c-f883b8c6c6f8',
+            'aeadd430-44e6-4b79-a441-02459d797f3a',
+        ], $jobIdsInDatabase);
+    }
+
+    public function test_it_supports_enum_based_queues(): void
+    {
+        $this->markTestSkippedWhen(version_compare(Application::VERSION, '11.22.0', '<'), 'Enums not supported for queue names');
+
+        $queueAttributeSupportsEnum = false;
+
+        if (class_exists('Illuminate\Queue\Attributes\Queue')) {
+            $queueAttributeTypes = (new ReflectionClass('Illuminate\Queue\Attributes\Queue'))->getConstructor()->getParameters()[0]->getType();
+            $queueAttributeSupportsEnum = $queueAttributeTypes instanceof ReflectionNamedType && $queueAttributeTypes->getName() !== 'string';
+        }
+
+        $ingest = $this->fakeIngest();
+        Route::post('/users', function () use ($queueAttributeSupportsEnum): void {
+            $this->core->uuid->uuidResolver = fn () => '00000000-0000-0000-0000-000000000000';
+            MyJob::dispatch()->onQueue(Queues::MyQueue);
+            $queueAttributeSupportsEnum && MyJobWithEnumQueue::dispatch();
+        });
+
+        $response = $this->post('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('queued-job:*', function ($jobs) use ($queueAttributeSupportsEnum) {
+            $this->assertCount($queueAttributeSupportsEnum ? 2 : 1, $jobs);
+
+            return true;
+        });
+        $ingest->assertLatestWrite('queued-job:0.queue', 'my-queue');
+        $queueAttributeSupportsEnum && $ingest->assertLatestWrite('queued-job:1.queue', 'my-queue');
+    }
+}
+
+final class MyJob implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    public function handle(): void
+    {
+        //
+    }
+}
+
+final class MyListenerWithCustomQueue implements ShouldQueue
+{
+    use InteractsWithQueue;
+
+    public $queue = 'custom_queue';
+
+    public function handle(): void
+    {
+        //
+    }
+}
+
+final class MyListenerWithViaQueue implements ShouldQueue
+{
+    use InteractsWithQueue;
+
+    public function handle(): void
+    {
+        //
+    }
+
+    public function viaQueue(object $event)
+    {
+        return 'custom_queue';
+    }
+}
+
+class MyQueuedJobEvent
+{
+    use Dispatchable;
+}
+
+class MyQueuedMail extends Mailable
+{
+    public function content(): Content
+    {
+        Date::setTestNow(now()->addMicroseconds(2500));
+
+        return new Content(
+            view: 'mail',
+        );
+    }
+}
+
+enum Queues: string
+{
+    case MyQueue = 'my-queue';
+}
+
+#[Queue(Queues::MyQueue)]
+class MyJobWithEnumQueue implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    public function handle()
+    {
+        //
+    }
+}

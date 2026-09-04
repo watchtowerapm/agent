@@ -1,0 +1,1656 @@
+<?php
+
+namespace Tests\Feature\Sensors;
+
+use App\Http\UserController;
+use App\Livewire\Counter;
+use App\Models\User;
+use Carbon\CarbonImmutable;
+use Composer\InstalledVersions;
+use Exception;
+use Illuminate\Auth\GenericUser;
+use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Foundation\Http\Events\RequestHandled;
+use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Context;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Route;
+use Livewire\Livewire;
+use Orchestra\Testbench\Attributes\WithEnv;
+use Tests\TestCase;
+use Watchtower\Laravel\Compatibility;
+use Watchtower\Laravel\Events\IngestingEvents;
+use Watchtower\Laravel\ExecutionStage;
+use Watchtower\Laravel\Facades\Watchtower;
+use Watchtower\Laravel\SensorManager;
+
+use function fseek;
+use function fwrite;
+use function hash;
+use function hex2bin;
+use function html_entity_decode;
+use function json_decode;
+use function json_encode;
+use function now;
+use function ob_end_clean;
+use function ob_start;
+use function preg_match;
+use function preg_match_all;
+use function report;
+use function response;
+use function str_contains;
+use function stream_get_meta_data;
+use function strlen;
+use function tap;
+use function tmpfile;
+use function version_compare;
+
+class RequestSensorTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        $this->forceRequestExecutionState();
+
+        parent::setUp();
+
+        $this->setDeploy('v1.2.3');
+        $this->setServerName('web-01');
+        $this->setPeakMemory(1234);
+        $this->setTraceId('00000000-0000-0000-0000-000000000000');
+        $this->setExecutionStart(CarbonImmutable::parse('2000-01-01 01:02:03.456789'));
+    }
+
+    public function test_it_can_ingest_requests(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite([
+            [
+                'v' => 1,
+                't' => 'request',
+                'timestamp' => 946688523.456789,
+                'deploy' => 'v1.2.3',
+                'server' => 'web-01',
+                '_group' => hash('xxh128', 'GET|HEAD,,/users'),
+                'trace_id' => '00000000-0000-0000-0000-000000000000',
+                'user' => '',
+                'method' => 'GET',
+                'url' => 'http://localhost/users',
+                'route_name' => '',
+                'route_methods' => ['GET', 'HEAD'],
+                'route_domain' => '',
+                'route_path' => '/users',
+                'route_action' => 'Closure',
+                'ip' => '127.0.0.1',
+                'duration' => 0,
+                'status_code' => 200,
+                'request_size' => 0,
+                'response_size' => 2,
+                'bootstrap' => 0,
+                'before_middleware' => 0,
+                'action' => 0,
+                'render' => 0,
+                'after_middleware' => 0,
+                'sending' => 0,
+                'terminating' => 0,
+                'exceptions' => 0,
+                'logs' => 0,
+                'queries' => 0,
+                'lazy_loads' => 0,
+                'jobs_queued' => 0,
+                'mail' => 0,
+                'notifications' => 0,
+                'outgoing_requests' => 0,
+                'files_read' => 0,
+                'files_written' => 0,
+                'cache_events' => 0,
+                'hydrated_models' => 0,
+                'peak_memory_usage' => 1234,
+                'exception_preview' => '',
+                'context' => Compatibility::$contextExists ? '{}' : '',
+                'headers' => '{"host":["localhost"],"user-agent":["Symfony"],"accept":["text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"],"accept-language":["en-us,en;q=0.5"],"accept-charset":["ISO-8859-1,utf-8;q=0.7,*;q=0.7"]}',
+                'payload' => '',
+            ],
+        ]);
+    }
+
+    public function test_it_captures_the_response_size(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => '[{"name":"Tim"}]');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.response_size', 16);
+    }
+
+    public function test_it_captures_the_response_size_of_a_streamed_file(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('users', fn () => response()->file($this->fixturePath('empty-array.json')));
+
+        $response = $this->get('/users');
+
+        $ingest->assertLatestWrite('request:0.response_size', 17);
+    }
+
+    public function test_it_gracefully_handles_response_size_for_a_streamed_file_that_is_deleted_after_sending_the_response(): void
+    {
+        // Testing this normally is hard. Laravel does not call `send` for
+        // responses so we need to handle is pretty manually in this test.
+        $ingest = $this->fakeIngest();
+        $request = Request::create('http://localhost/users');
+
+        $file = tmpfile();
+        fwrite($file, '[{"name":"Tim"}]');
+        fseek($file, 0);
+
+        ob_start();
+        $response = response()->file(stream_get_meta_data($file)['uri'])->deleteFileAfterSend()->sendContent();
+        ob_end_clean();
+
+        [$record, $resolver] = $this->core->sensor->request($request, $response);
+        $this->core->ingest->write($resolver());
+        $ingest->digest();
+
+        $ingest->assertLatestWrite('request:0.response_size', 0);
+    }
+
+    public function test_it_gracefully_handles_response_size_for_streamed_responses(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('users', fn () => response()->stream(function (): void {
+            echo '[]';
+        }));
+
+        $this->get('/users');
+
+        $ingest->assertLatestWrite('request:0.response_size', 0);
+    }
+
+    public function test_it_captures_the_content_length_when_present_on_a_streamed_response_of_unknown_size(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('users', fn () => response()->stream(function (): void {
+            echo '[]';
+        }, headers: ['Content-length' => 2]));
+
+        $this->get('/users');
+
+        $ingest->assertLatestWrite('request:0.response_size', 2);
+    }
+
+    public function test_it_uses_the_content_length_header_as_the_response_size_when_present_on_a_streamed_file_response_where_the_file_is_deleted_after_sending(): void
+    {
+        $ingest = $this->fakeIngest();
+        /** @var SensorManager */
+        $request = Request::create('http://localhost/users');
+
+        $file = tmpfile();
+        fwrite($file, '[{"name":"Tim"}]');
+        fseek($file, 0);
+
+        ob_start();
+        $response = response()->file(stream_get_meta_data($file)['uri'], headers: ['Content-length' => 17])->deleteFileAfterSend()->sendContent();
+        ob_end_clean();
+
+        [$record, $resolver] = $this->core->sensor->request($request, $response);
+        $this->core->ingest->write($resolver());
+        $ingest->digest();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.response_size', 17);
+    }
+
+    public function test_it_captures_the_request_size(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->call('GET', '/users', content: 'abc');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.request_size', 3);
+    }
+
+    public function test_it_captures_the_authenticated_user(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->actingAs(new GenericUser(['id' => 'abc-123']))
+            ->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.user', 'abc-123');
+    }
+
+    public function test_it_captures_events_triggered_during_an_authenticated_request(): void
+    {
+        $ingest = $this->fakeIngest();
+        $ingestingEvents = [];
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) use (&$ingestingEvents): void {
+            $ingestingEvents[] = $event;
+        });
+        Route::get('/users', function () {
+            DB::table('users')->get();
+            DB::table('users')->get();
+
+            Cache::put('users:345', 'xxxx');
+            Cache::get('users:345');
+
+            return [];
+        });
+
+        $response = $this->actingAs(new GenericUser(['id' => 'abc-123']))
+            ->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.user', 'abc-123');
+        $ingest->assertLatestWrite('request:0.queries', 2);
+        $ingest->assertLatestWrite('request:0.cache_events', 2);
+
+        // 1 request + 2 queries + 2 cache events + 1 user record, with the
+        // user record excluded from the count.
+        $this->assertCount(1, $ingestingEvents);
+        $ingest->assertLatestWriteRecordCount(6);
+        $this->assertSame(5, $ingestingEvents[0]->eventCount());
+    }
+
+    public function test_it_captures_query_parameters(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users?key_1=value&key_2[sub_field]=value&key_3[]=value&key_4[9]=value&key_5[][][foo][9]=bar&flag_value');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/users?key_1=value&key_2[sub_field]=value&key_3[]=value&key_4[9]=value&key_5[][][foo][9]=bar&flag_value');
+    }
+
+    public function test_it_captures_the_route_name(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => [])->name('users.index');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.route_name', 'users.index');
+    }
+
+    public function test_it_captures_the_route_methods(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.route_methods', ['GET', 'HEAD']);
+    }
+
+    public function test_it_captures_route_actions_for_closures(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.route_action', 'Closure');
+    }
+
+    public function test_it_captures_route_actions_for_controller_classes(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', [UserController::class, 'index']);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.route_action', 'App\Http\UserController@index');
+    }
+
+    public function test_it_captures_real_path_and_route_path(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users/{user}', fn () => ['name' => 'Tim']);
+
+        $response = $this->get('/users/123');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/users/123');
+        $ingest->assertLatestWrite('request:0.route_path', '/users/{user}');
+    }
+
+    public function test_it_captures_subdomain_and_route_domain(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::domain('{product}.laravel.com')->get('/users/{user}', fn () => ['name' => 'Tim']);
+
+        $response = $this->get('http://forge.laravel.com/users/123');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://forge.laravel.com/users/123');
+        $ingest->assertLatestWrite('request:0.route_domain', '{product}.laravel.com');
+    }
+
+    public function test_it_doesnt_capture_the_request_ur_l_user(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('http://ryuta:secret@localhost/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/users');
+        $this->assertStringNotContainsString('ryuta', $ingest->latestWriteAsString());
+        $this->assertStringNotContainsString('secret', $ingest->latestWriteAsString());
+    }
+
+    public function test_it_does_not_escape_slashes_in_the_wire_payload(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $this->assertStringContainsString('"url":"http://localhost/users"', $ingest->latestWriteAsString());
+    }
+
+    public function test_it_preserves_zero_fractions_in_the_wire_payload(): void
+    {
+        $this->setExecutionStart(CarbonImmutable::parse('2000-01-01 01:02:03.000000'));
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $this->assertStringContainsString('"timestamp":946688523.0,', $ingest->latestWriteAsString());
+    }
+
+    public function test_it_captures_the_duration_in_microseconds(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', function () {
+            $this->travelTo(now()->addMicroseconds(5));
+
+            return [];
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_exceptions(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', function (): void {
+            report(new Exception('Handled error'));
+
+            throw new Exception('Unhandled error');
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.exceptions', 2);
+        $ingest->assertLatestWrite('request:0.exception_preview', 'Unhandled error');
+    }
+
+    public function test_it_doesnt_capture_the_exception_preview_for_handled_exceptions(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', function () {
+            report(new Exception('Handled error'));
+
+            return [];
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.exceptions', 1);
+        $ingest->assertLatestWrite('request:0.exception_preview', '');
+    }
+
+    public function test_it_consistently_sorts_the_route_methods(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::match(['GET', 'POST', 'PATCH'], '/users', fn () => []);
+        Route::match(['PATCH', 'POST', 'GET'], '/users/{user}', fn () => []);
+
+        $response = $this->get('/users');
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.route_methods', ['GET', 'HEAD', 'PATCH', 'POST']);
+
+        $response = $this->get('/users/123');
+        $response->assertOk();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.route_methods', ['GET', 'HEAD', 'PATCH', 'POST']);
+    }
+
+    public function test_it_handles_hea_d_requests(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        $response = $this->head('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.response_size', 0);
+    }
+
+    public function test_it_handles_204_no_content_requests(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => response('foo', 204));
+
+        $response = $this->head('/users');
+
+        $response->assertNoContent();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.response_size', 0);
+    }
+
+    public function test_it_captures_the_route_group(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::domain('{product}.laravel.com')->get('/users/{user}', fn () => []);
+
+        $response = $this->get('http://forge.laravel.com/users/123');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0._group', hash('xxh128', 'GET|HEAD,{product}.laravel.com,/users/{user}'));
+    }
+
+    public function test_it_handles_the_root_path(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/', fn () => 'Welcome');
+
+        $response = $this->get('/');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.route_path', '/');
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/');
+    }
+
+    public function test_it_gracefully_handles_non_string_query_string(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', function (Request $request): void {
+            $request->server->set('QUERY_STRING', []);
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/users');
+    }
+
+    public function test_it_captures_bootstrap_execution_stage(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+
+        // Simulating boot time.
+        $this->core->stage(ExecutionStage::Bootstrap);
+        $this->syncClock(now()->addMicroseconds(5));
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.bootstrap', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_global_before_middleware_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+        App::instance('travel-before', function ($request, $next) {
+            $this->travelTo(now()->addMicroseconds(5));
+
+            return $next($request);
+        });
+        $this->app[Kernel::class]->pushMiddleware('travel-before');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.before_middleware', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_route_before_middleware_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        App::instance('travel-before', function ($request, $next) {
+            $this->travelTo(now()->addMicroseconds(5));
+
+            return $next($request);
+        });
+        Route::get('/users', fn () => [])->middleware('travel-before');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.before_middleware', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_action_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', function () {
+            $this->travelTo(now()->addMicroseconds(5));
+
+            return [];
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.action', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_render_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => new class implements Arrayable
+        {
+            public function toArray()
+            {
+                Date::setTestNow(now()->addMicroseconds(5));
+
+                return [];
+            }
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.render', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_route_after_middleware_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        App::instance('travel-after', function ($request, $next) {
+            return tap($next($request), function (): void {
+                $this->travelTo(now()->addMicroseconds(5));
+            });
+        });
+        Route::get('/users', fn () => [])->middleware('travel-after');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.after_middleware', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_global_after_middleware_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+        App::instance('travel-after', function ($request, $next) {
+            return tap($next($request), function (): void {
+                $this->travelTo(now()->addMicroseconds(5));
+            });
+        });
+        $this->app[Kernel::class]->pushMiddleware('travel-after');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.after_middleware', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_sending_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        // When running tests, Laravel does not call the `send` method.  We will
+        // call it here to simulate a real request as we want to make sure we
+        // measure how long the request takes to send.
+        Event::listen(fn (RequestHandled $event) => $event->response->send(true));
+        Route::get('/users', fn () => response()->stream(function (): void {
+            $this->travelTo(now()->addMicroseconds(5));
+
+            // ...
+        }));
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.sending', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_global_middleware_terminating_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+        App::instance('terminable', new class
+        {
+            public function handle($request, $next)
+            {
+                return $next($request);
+            }
+
+            public function terminate(): void
+            {
+                Date::setTestNow(now()->addMicroseconds(5));
+            }
+        });
+        $this->app[Kernel::class]->pushMiddleware('terminable');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.terminating', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_route_middleware_terminating_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        App::instance('terminable', new class
+        {
+            public function handle($request, $next)
+            {
+                return $next($request);
+            }
+
+            public function terminate(): void
+            {
+                Date::setTestNow(now()->addMicroseconds(5));
+            }
+        });
+        Route::get('/users', fn () => [])->middleware('terminable');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.exceptions', 0);
+        $ingest->assertLatestWrite('request:0.terminating', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_terminating_callback_duration(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+        App::terminating(function (): void {
+            $this->travelTo(now()->addMicroseconds(5));
+        });
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.terminating', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_terminating_duration_for_unknown_routes(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/users', fn () => []);
+        App::terminating(function (): void {
+            $this->travelTo(now()->addMicroseconds(5));
+        });
+
+        $response = $this->get('/unknown');
+
+        $response->assertNotFound();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.terminating', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_captures_middleware_duration_for_unknown_routes_and_collapses_after_middleware_into_before(): void
+    {
+        $ingest = $this->fakeIngest();
+        App::instance('global-middleware', function ($request, $next) {
+            $this->travelTo(now()->addMicroseconds(1));
+
+            return tap($next($request), function (): void {
+                $this->travelTo(now()->addMicroseconds(2));
+            });
+        });
+        $this->app[Kernel::class]->pushMiddleware('global-middleware');
+
+        $response = $this->get('/unknown');
+
+        $response->assertNotFound();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.before_middleware', 3);
+        $ingest->assertLatestWrite('request:0.after_middleware', 0);
+        $ingest->assertLatestWrite('request:0.duration', 3);
+    }
+
+    public function test_it_captures_middleware_durations_for_global_middleware_that_return_a_response_and_it_collapses_after_middleware_into_before(): void
+    {
+        $ingest = $this->fakeIngest();
+        App::instance('global-middleware-change-response', function ($request, $next) {
+            $this->travelTo(now()->addMicroseconds(1));
+
+            return response('');
+        });
+        App::instance('global-middleware-progress-time', function ($request, $next) {
+            $this->travelTo(now()->addMicroseconds(2));
+
+            return tap($next($request), function (): void {
+                $this->travelTo(now()->addMicroseconds(3));
+            });
+        });
+        $this->app[Kernel::class]->pushMiddleware('global-middleware-progress-time');
+        $this->app[Kernel::class]->pushMiddleware('global-middleware-change-response');
+        Route::get('/users', fn () => []);
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.before_middleware', 6);
+        $ingest->assertLatestWrite('request:0.after_middleware', 0);
+        $ingest->assertLatestWrite('request:0.duration', 6);
+    }
+
+    public function test_it_captures_the_render_duration_for_responses_returned_from_a_middleware_as_part_of_the_middleware_stage(): void
+    {
+        $ingest = $this->fakeIngest();
+        App::instance('renderable-response-middleware', fn ($request, $next) => new class implements Arrayable
+        {
+            public function toArray()
+            {
+                Date::setTestNow(now()->addMicroseconds(5));
+
+                return [];
+            }
+        });
+        Route::get('/users', fn () => [])->middleware('renderable-response-middleware');
+
+        $response = $this->get('/users');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.before_middleware', 5);
+        $ingest->assertLatestWrite('request:0.duration', 5);
+    }
+
+    public function test_it_supports_custom_request_methods(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::match('blah', '/', fn () => 'Welcome!');
+
+        $response = $this->call('blah', '/');
+
+        $response->assertOk();
+        $response->assertContent('Welcome!');
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.method', 'BLAH');
+        $ingest->assertLatestWrite('request:0.route_methods', ['BLAH']);
+    }
+
+    public function test_it_captures_context(): void
+    {
+        $this->markTestSkippedUnless(Compatibility::$contextExists, 'This test requires the Laravel Context.');
+
+        $ingest = $this->fakeIngest();
+        $model = User::factory()->create();
+        Route::get('/test', function () use ($model) {
+            Context::add('string', 'value');
+            Context::add('integer', 123);
+            Context::add('float', 123.456);
+            Context::add('boolean', true);
+            Context::add('null', null);
+            Context::add('list', [1, 2.0, 'three']);
+            Context::add('associative', ['key' => 'value']);
+            Context::add('object', (object) ['key' => 'value']);
+            Context::add('model', $model);
+        });
+
+        $response = $this->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.context', function ($context) use ($model) {
+            $context = json_decode($context, true);
+            $this->assertSame('value', $context['string']);
+            $this->assertSame(123, $context['integer']);
+            $this->assertSame(123.456, $context['float']);
+            $this->assertTrue($context['boolean']);
+            $this->assertNull($context['null']);
+            $this->assertSame([1, 2.0, 'three'], $context['list']);
+            $this->assertSame(['key' => 'value'], $context['associative']);
+            $this->assertSame(['key' => 'value'], $context['object']);
+            $this->assertSame($model->getKey(), $context['model']['id']);
+
+            return true;
+        });
+    }
+
+    public function test_it_can_capture_binary_context(): void
+    {
+        $this->markTestSkippedUnless(Compatibility::$contextExists, 'This test requires the Laravel Context.');
+
+        $unrecoverableExceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$unrecoverableExceptions): void {
+            $unrecoverableExceptions[] = $e;
+        });
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {
+            Context::add('binary', hex2bin('abc123'));
+        });
+
+        $response = $this->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.context', function ($context) {
+            $context = json_decode($context, true);
+            $this->assertSame(['binary' => '��#'], $context);
+
+            return true;
+        });
+        $this->assertSame([], $unrecoverableExceptions);
+    }
+
+    public function test_it_can_capture_non_utf_8_context(): void
+    {
+        $this->markTestSkippedUnless(Compatibility::$contextExists, 'This test requires the Laravel Context.');
+
+        $unrecoverableExceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$unrecoverableExceptions): void {
+            $unrecoverableExceptions[] = $e;
+        });
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {
+            Context::add('non-utf-8', "Caf\xe9");
+        });
+
+        $response = $this->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.context', function ($context) {
+            $context = json_decode($context, true);
+            $this->assertSame(['non-utf-8' => "Caf\u{FFFD}"], $context);
+
+            return true;
+        });
+        $this->assertSame([], $unrecoverableExceptions);
+    }
+
+    public function test_it_does_not_escape_slashes_in_the_context(): void
+    {
+        $this->markTestSkippedUnless(Compatibility::$contextExists, 'This test requires the Laravel Context.');
+
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {
+            Context::add('url', 'https://example.com/path');
+        });
+
+        $response = $this->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.context', fn ($context) => str_contains($context, '"url":"https://example.com/path"'));
+    }
+
+    public function test_it_does_not_escape_unicode_characters_in_the_context(): void
+    {
+        $this->markTestSkippedUnless(Compatibility::$contextExists, 'This test requires the Laravel Context.');
+
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {
+            Context::add('text', 'café');
+        });
+
+        $response = $this->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.context', fn ($context) => str_contains($context, 'café'));
+    }
+
+    public function test_it_captures_request_headers(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withHeader('Test-Header', 'test header value')
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', function ($headers) {
+            $headers = json_decode($headers, true);
+            $this->assertSame([
+                'host' => [
+                    'localhost',
+                ],
+                'user-agent' => [
+                    'Symfony',
+                ],
+                'accept' => [
+                    'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                ],
+                'accept-language' => [
+                    'en-us,en;q=0.5',
+                ],
+                'accept-charset' => [
+                    'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+                ],
+                'test-header' => [
+                    'test header value',
+                ],
+            ], $headers);
+
+            return true;
+        });
+    }
+
+    #[WithEnv('WATCHTOWER_REDACT_HEADERS', 'Authorization,Cookie,Proxy-Authorization,custom')]
+    public function test_it_redacts_sensitive_headers(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withBasicAuth('taylor', '$f4c4d3')
+            ->withHeader('Proxy-Authorization', 'Bearer secret-token')
+            ->withHeader('Cookie', 'laravel_session=abc123; XSRF-TOKEN=1234')
+            ->withHeader('Custom', 'secret')
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', function ($headers) {
+            $headers = json_decode($headers, true);
+            $this->assertSame(['Basic [20 bytes redacted]'], $headers['authorization']);
+            $this->assertSame(['Bearer [12 bytes redacted]'], $headers['proxy-authorization']);
+            $this->assertSame(['laravel_session=[6 bytes redacted]; XSRF-TOKEN=[4 bytes redacted]'], $headers['cookie']);
+            $this->assertSame(['[6 bytes redacted]'], $headers['custom']);
+            $this->assertArrayNotHasKey('php-auth-user', $headers);
+            $this->assertArrayNotHasKey('php-auth-pw', $headers);
+
+            return true;
+        });
+    }
+
+    #[WithEnv('WATCHTOWER_REDACT_HEADERS', '')]
+    public function test_header_redaction_can_be_disabled(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withBasicAuth('taylor', '$f4c4d3')
+            ->withHeader('Proxy-Authorization', 'Bearer secret-token')
+            ->withHeader('Cookie', 'laravel_session=abc123; XSRF-TOKEN=1234')
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', function ($headers) {
+            $headers = json_decode($headers, true);
+            $this->assertSame(['Basic dGF5bG9yOiRmNGM0ZDM='], $headers['authorization']);
+            $this->assertSame(['Bearer secret-token'], $headers['proxy-authorization']);
+            $this->assertSame(['laravel_session=abc123; XSRF-TOKEN=1234'], $headers['cookie']);
+            $this->assertArrayNotHasKey('php-auth-user', $headers);
+            $this->assertArrayNotHasKey('php-auth-pw', $headers);
+
+            return true;
+        });
+    }
+
+    public function test_it_can_capture_binary_headers(): void
+    {
+        $unrecoverableExceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$unrecoverableExceptions): void {
+            $unrecoverableExceptions[] = $e;
+        });
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withHeader('Binary-Header', hex2bin('abc123'))
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', function ($headers) {
+            $headers = json_decode($headers, true);
+            $this->assertArrayHasKey('binary-header', $headers);
+            $this->assertSame(['��#'], $headers['binary-header']);
+
+            return true;
+        });
+        $this->assertSame([], $unrecoverableExceptions);
+    }
+
+    public function test_it_can_capture_non_utf_8_headers(): void
+    {
+        $unrecoverableExceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$unrecoverableExceptions): void {
+            $unrecoverableExceptions[] = $e;
+        });
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withHeader('Non-Utf-8-Header', "Caf\xe9")
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', function ($headers) {
+            $headers = json_decode($headers, true);
+            $this->assertArrayHasKey('non-utf-8-header', $headers);
+            $this->assertSame(["Caf\u{FFFD}"], $headers['non-utf-8-header']);
+
+            return true;
+        });
+        $this->assertSame([], $unrecoverableExceptions);
+    }
+
+    public function test_it_does_not_escape_unicode_characters_in_the_headers(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withHeader('Test-Header', 'café')
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', fn ($headers) => str_contains($headers, 'café'));
+    }
+
+    public function test_it_handles_unconventional_headers(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/test', function () {});
+
+        $response = $this
+            ->withHeader('Authorization', 'secret-token')
+            ->withHeader('Proxy-Authorization', 'secret-key secret-token')
+            ->withHeader('Cookie', 'secret')
+            ->get('/test');
+
+        $response->assertOk();
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.headers', function ($headers) {
+            $headers = json_decode($headers, true);
+            $this->assertSame(['[12 bytes redacted]'], $headers['authorization']);
+            $this->assertSame(['[23 bytes redacted]'], $headers['proxy-authorization']);
+            $this->assertSame(['[6 bytes redacted]'], $headers['cookie']);
+
+            return true;
+        });
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_captures_a_form_request_payload_on_unhandled_exceptions(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this
+            ->patch('/register?redirect=1', [
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '$f4c4d3',
+                    'avatar' => UploadedFile::fake()->create('avatar.jpg', 1, 'image/jpeg'),
+                ],
+            ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', function ($payload) {
+            $payload = json_decode($payload, true);
+            $this->assertSame([
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '[7 bytes redacted]',
+                ],
+                '_nightwatch_files' => [
+                    'user' => [
+                        'avatar' => [
+                            'originalName' => 'avatar.jpg',
+                            'size' => 1024,
+                            'error' => 0,
+                        ],
+                    ],
+                ],
+            ], $payload);
+
+            return true;
+        });
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_can_capture_binary_payload_values(): void
+    {
+        $unrecoverableExceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$unrecoverableExceptions): void {
+            $unrecoverableExceptions[] = $e;
+        });
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this->patch('/register', [
+            'binary' => hex2bin('abc123'),
+        ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', function ($payload) {
+            $payload = json_decode($payload, true);
+            $this->assertSame([
+                'binary' => '��#',
+                '_nightwatch_files' => [],
+            ], $payload);
+
+            return true;
+        });
+        $this->assertSame([], $unrecoverableExceptions);
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_can_capture_non_utf_8_payload_values(): void
+    {
+        $unrecoverableExceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$unrecoverableExceptions): void {
+            $unrecoverableExceptions[] = $e;
+        });
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this->patch('/register', [
+            'non-utf-8' => "Caf\xe9",
+        ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', function ($payload) {
+            $payload = json_decode($payload, true);
+            $this->assertSame([
+                'non-utf-8' => "Caf\u{FFFD}",
+                '_nightwatch_files' => [],
+            ], $payload);
+
+            return true;
+        });
+        $this->assertSame([], $unrecoverableExceptions);
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_preserves_zero_fractions_in_the_payload(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this->patchJson('/register', [
+            'amount' => 2.0,
+        ], options: JSON_PRESERVE_ZERO_FRACTION);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', function ($payload) {
+            $payload = json_decode($payload, true);
+            $this->assertSame(2.0, $payload['amount']);
+
+            return true;
+        });
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_does_not_escape_slashes_in_the_payload(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this->patch('/register', [
+            'url' => 'https://example.com/path',
+        ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', fn ($payload) => str_contains($payload, '"url":"https://example.com/path"'));
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_does_not_escape_unicode_characters_in_the_payload(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this->patch('/register', [
+            'text' => 'café',
+        ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', fn ($payload) => str_contains($payload, 'café'));
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_captures_a_json_payload_on_unhandled_exceptions(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this
+            ->patchJson('/register?redirect=1', [
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '$f4c4d3',
+                ],
+            ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', function ($payload) {
+            $payload = json_decode($payload, true);
+            $this->assertSame([
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '[7 bytes redacted]',
+                ],
+                '_nightwatch_files' => [],
+            ], $payload);
+
+            return true;
+        });
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    #[WithEnv('WATCHTOWER_REDACT_PAYLOAD_FIELDS', 'foo')]
+    public function test_the_redacted_keys_can_be_customized(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this
+            ->patch('/register?redirect=1', [
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '$f4c4d3',
+                ],
+                'foo' => 'bar',
+            ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', function ($payload) {
+            $payload = json_decode($payload, true);
+            $this->assertSame([
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '$f4c4d3',
+                ],
+                'foo' => '[3 bytes redacted]',
+                '_nightwatch_files' => [],
+            ], $payload);
+
+            return true;
+        });
+    }
+
+    public function test_it_doesnt_capture_request_payload_on_unhandled_exceptions_by_default(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::patch('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this
+            ->patchJson('/register?redirect=1', [
+                'user' => [
+                    'username' => 'taylor',
+                    'password' => '$f4c4d3',
+                ],
+            ]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', '{"_nightwatch_error":"NOT_ENABLED"}');
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_doesnt_capture_request_payload_on_get_requests_unless_there_is_payload(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::get('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $response = $this->json('GET', '/register?redirect=1');
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', '');
+
+        $ingest->forgetWrites();
+
+        $response = $this->json('GET', '/register?redirect=1', ['foo' => 'bar']);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', '{"foo":"bar","_nightwatch_files":[]}');
+
+        $ingest->forgetWrites();
+
+        $response = $this->json('GET', '/register?redirect=1', ['foo' => UploadedFile::fake()->create('avatar.jpg', 1, 'image/jpeg')]);
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', '{"_nightwatch_files":{"foo":{"originalName":"avatar.jpg","size":1024,"error":0}}}');
+    }
+
+    #[WithEnv('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', 'true')]
+    public function test_it_doesnt_capture_request_payload_on_unsupported_content_types(): void
+    {
+        $ingest = $this->fakeIngest();
+        Route::post('/register', function () {
+            throw new Exception('Whoops!');
+        });
+
+        $content = '<xml version="1.0"?><foo>bar</foo>';
+        $response = $this->call(
+            'POST',
+            '/register?redirect=1',
+            server: $this->transformHeadersToServerVars([
+                'CONTENT_LENGTH' => strlen($content),
+                'CONTENT_TYPE' => 'application/xml',
+            ]),
+            content: $content
+        );
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', '{"_nightwatch_error":"UNSUPPORTED_CONTENT_TYPE"}');
+
+        $ingest->forgetWrites();
+
+        $content = json_encode(['foo' => 'bar'], JSON_THROW_ON_ERROR);
+        $response = $this->call(
+            'POST',
+            '/register?redirect=1',
+            server: $this->transformHeadersToServerVars([
+                'CONTENT_LENGTH' => strlen($content),
+                'CONTENT_TYPE' => 'bad',
+            ]),
+            content: $content
+        );
+
+        $response->assertInternalServerError();
+        $ingest->assertWrittenTimes(2);
+        $ingest->assertLatestWrite('request:0.payload', '{"_nightwatch_error":"UNSUPPORTED_CONTENT_TYPE"}');
+    }
+
+    public function test_livewire_2(): void
+    {
+        $this->markTestSkippedWhen(version_compare(InstalledVersions::getVersion('livewire/livewire'), '3.0.0', '>='), 'Requires Livewire 2');
+
+        $ingest = $this->fakeIngest();
+        Config::set('livewire.class_namespace', 'App\\Livewire'); // This is the default for Livewire 3, but we set it here to ensure compatibility with Livewire 2.
+        Route::get('/counter', Counter::class);
+
+        $response = $this
+            ->get('/counter')
+            ->assertOk();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/counter');
+        $ingest->assertLatestWrite('request:0.route_path', '/counter');
+        $ingest->assertLatestWrite('request:0.route_action', 'App\Livewire\Counter');
+
+        $ingest->forgetWrites();
+        $this->core->prepareForRequest(Request::create('/'));
+
+        preg_match('/wire:initial-data="([^"]+)"/', $response->getContent(), $matches);
+        $snapshot = json_decode(html_entity_decode($matches[1]), true);
+
+        $response = $this
+            ->withHeader('X-Livewire', true)
+            ->post('/livewire/message/counter', [
+                'fingerprint' => $snapshot['fingerprint'],
+                'serverMemo' => $snapshot['serverMemo'],
+                'updates' => [
+                    [
+                        'type' => 'syncInput',
+                        'payload' => [
+                            'name' => 'count',
+                            'value' => 2,
+                        ],
+                    ],
+                    [
+                        'type' => 'callMethod',
+                        'payload' => [
+                            'id' => 'foo',
+                            'method' => 'increment',
+                            'params' => [],
+                        ],
+                    ],
+                    [
+                        'type' => 'callMethod',
+                        'payload' => [
+                            'id' => 'foo',
+                            'method' => 'increment',
+                            'params' => [],
+                        ],
+                    ],
+                    [
+                        'type' => 'callMethod',
+                        'payload' => [
+                            'id' => 'foo',
+                            'method' => 'decrement',
+                            'params' => [],
+                        ],
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/livewire/message/counter');
+        $ingest->assertLatestWrite('request:0.route_path', '/livewire/message/{name}');
+        $ingest->assertLatestWrite('request:0.route_action', 'App\Livewire\Counter');
+    }
+
+    public function test_livewire_3(): void
+    {
+        $this->markTestSkippedWhen(version_compare(InstalledVersions::getVersion('livewire/livewire'), '3.0.0', '<'), 'Requires Livewire 3');
+
+        $ingest = $this->fakeIngest();
+        Route::get('/counter', Counter::class);
+
+        $response = $this
+            ->get('/counter')
+            ->assertOk();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/counter');
+        $ingest->assertLatestWrite('request:0.route_path', '/counter');
+        $ingest->assertLatestWrite('request:0.route_action', 'App\Livewire\Counter');
+
+        $ingest->forgetWrites();
+        $this->core->prepareForRequest(Request::create('/'));
+
+        preg_match('/wire:snapshot="([^"]+)"/', $response->getContent(), $matches);
+        $snapshot = html_entity_decode($matches[1]);
+
+        $response = $this
+            ->withHeader('X-Livewire', true)
+            ->post('/livewire/update', [
+                'components' => [
+                    [
+                        'snapshot' => $snapshot,
+                        'updates' => [
+                            'count' => 2,
+                        ],
+                        'calls' => [
+                            [
+                                'method' => 'increment',
+                                'params' => [],
+                            ],
+                            [
+                                'method' => 'increment',
+                                'params' => [],
+                            ],
+                            [
+                                'method' => 'decrement',
+                                'params' => [],
+                            ],
+                        ],
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/livewire/update');
+        $ingest->assertLatestWrite('request:0.route_path', '/livewire/update');
+        $ingest->assertLatestWrite('request:0.route_action', 'App\Livewire\Counter');
+    }
+
+    public function test_livewire_3_with_multiple_components(): void
+    {
+        $this->markTestSkippedWhen(version_compare(InstalledVersions::getVersion('livewire/livewire'), '3.0.0', '<'), 'Requires Livewire 3');
+
+        $ingest = $this->fakeIngest();
+        Route::view('/dashboard', 'dashboard');
+
+        $response = $this
+            ->get('/dashboard')
+            ->assertOk();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/dashboard');
+        $ingest->assertLatestWrite('request:0.route_path', '/dashboard');
+        $ingest->assertLatestWrite('request:0.route_action', '\Illuminate\Routing\ViewController');
+
+        $ingest->forgetWrites();
+        $this->core->prepareForRequest(Request::create('/'));
+
+        preg_match_all('/wire:snapshot="([^"]+)"/', $response->getContent(), $matches);
+        $snapshot1 = html_entity_decode($matches[1][0]);
+        $snapshot2 = html_entity_decode($matches[1][1]);
+
+        $response = $this
+            ->withHeader('X-Livewire', true)
+            ->post('/livewire/update', [
+                'components' => [
+                    [
+                        'snapshot' => $snapshot1,
+                        'updates' => [
+                            'count' => 2,
+                        ],
+                        'calls' => [
+                            [
+                                'method' => 'increment',
+                                'params' => [],
+                            ],
+                            [
+                                'method' => 'increment',
+                                'params' => [],
+                            ],
+                            [
+                                'method' => 'decrement',
+                                'params' => [],
+                            ],
+                        ],
+                    ],
+                    [
+                        'snapshot' => $snapshot2,
+                        'updates' => [
+                            'count' => 2,
+                        ],
+                        'calls' => [],
+                    ],
+                ],
+            ])
+            ->assertOk();
+
+        $ingest->assertWrittenTimes(1);
+        $ingest->assertLatestWrite('request:0.url', 'http://localhost/livewire/update');
+        $ingest->assertLatestWrite('request:0.route_path', '/livewire/update');
+        $ingest->assertLatestWrite('request:0.route_action', 'App\Livewire\Counter, App\Livewire\AnotherCounter');
+    }
+}

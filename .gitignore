@@ -1,0 +1,9 @@
+.env
+/.phpunit.result.cache
+/.pint.cache
+/.pint.ci.cache
+/composer.lock
+/node_modules
+/phpunit.xml
+/tests/database.sqlite*
+/vendor

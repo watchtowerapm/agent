@@ -1,0 +1,664 @@
+<?php
+
+namespace Tests\Unit;
+
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\RateLimiter;
+use RuntimeException;
+use Tests\FakeRecord;
+use Tests\SidecarReply;
+use Tests\TestCase;
+use Watchtower\Laravel\Events\IngestingEvents;
+use Watchtower\Laravel\Facades\Watchtower;
+use Watchtower\Laravel\Transport\Frame;
+use Watchtower\Laravel\Transport\Protocol;
+
+use function array_fill;
+use function array_key_exists;
+use function array_shift;
+use function call_user_func_array;
+use function collect;
+use function fclose;
+use function fopen;
+use function implode;
+use function json_encode;
+use function phpversion;
+use function report;
+use function str_repeat;
+use function stream_wrapper_register;
+use function stream_wrapper_unregister;
+use function strlen;
+use function str_split;
+use function substr;
+use function version_compare;
+
+class IngestTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        StreamWrapper::reset();
+        stream_wrapper_register('tcp', StreamWrapper::class);
+        $this->core->ingest->streamFactory = fn ($address, $timeout) => fopen($address, 'r+');
+    }
+
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        stream_wrapper_unregister('tcp');
+    }
+
+    public function test_it_configures_the_stream(): void
+    {
+        $calls = [];
+        $this->core->ingest->streamFactory = function (...$args) use (&$calls) {
+            $calls[] = $args;
+
+            return fopen($args[0], 'r+');
+        };
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $calls);
+        [$address, $connectionTimeout] = $calls[0];
+        $this->assertSame('tcp://127.0.0.1:2407', $address);
+        $this->assertSame(0.5, $connectionTimeout);
+        $this->assertContains('stream_open', StreamWrapper::$events->pluck('type')->all());
+        $this->assertContains('stream_write', StreamWrapper::$events->pluck('type')->all());
+        $this->assertSame('stream_close', StreamWrapper::$events->pluck('type')->last());
+    }
+
+    public function test_it_throws_an_exception_when_unable_to_set_read_timeout(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        StreamWrapper::intercept('stream_set_option', fn () => false);
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(<<<'MESSAGE'
+        Failed configuring agent read timeout
+        ---
+        timed_out: false
+        blocked: true
+        eof: false
+        wrapper_type: user-space
+        stream_type: user-space
+        mode: r+
+        unread_bytes: 0
+        seekable: true
+        uri: tcp://127.0.0.1:2407
+        MESSAGE);
+
+        throw $exceptions[0];
+    }
+
+    public function test_it_sets_the_read_timeout(): void
+    {
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, StreamWrapper::type('stream_set_option'));
+        $this->assertSame([
+            STREAM_OPTION_READ_TIMEOUT, 0, 500000,
+        ], StreamWrapper::type('stream_set_option')->value('args'));
+        $this->assertContains('stream_write', StreamWrapper::$events->pluck('type')->all());
+        $this->assertContains('stream_read', StreamWrapper::$events->pluck('type')->all());
+        $this->assertSame('stream_close', StreamWrapper::$events->pluck('type')->last());
+    }
+
+    public function test_it_can_write_the_payload_in_one_write(): void
+    {
+        $tokenHash = self::tokenHash();
+        $writes = [];
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            $writes[] = $value;
+
+            return strlen($value);
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $messages = Frame::decodeAll(implode('', $writes));
+        $this->assertSame(Protocol::TYPE_HELLO, $messages[0]['type']);
+        $this->assertSame($tokenHash, $messages[0]['token_hash']);
+        $this->assertSame(Protocol::TYPE_TELEMETRY_BATCH, $messages[1]['type']);
+        $this->assertSame([FakeRecord::make()], $messages[1]['records']);
+        $this->assertContains('stream_write', StreamWrapper::$events->pluck('type')->all());
+        $this->assertContains('stream_read', StreamWrapper::$events->pluck('type')->all());
+        $this->assertSame('stream_close', StreamWrapper::$events->pluck('type')->last());
+    }
+
+    public function test_it_throws_an_exception_if_initial_write_to_stream_fails(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        StreamWrapper::intercept('stream_write', fn (string $value) => false);
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(<<<'MESSAGE'
+        Unable to write to stream
+        ---
+        timed_out: false
+        blocked: true
+        eof: false
+        wrapper_type: user-space
+        stream_type: user-space
+        mode: r+
+        unread_bytes: 0
+        seekable: true
+        uri: tcp://127.0.0.1:2407
+        MESSAGE);
+
+        throw $exceptions[0];
+    }
+
+    public function test_it_can_write_the_payload_in_multiple_write(): void
+    {
+        $tokenHash = self::tokenHash();
+        $writes = [];
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            $writes[] = substr($value, 0, 8);
+
+            return min(8, strlen($value));
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertGreaterThan(2, count($writes));
+        $messages = Frame::decodeAll(implode('', $writes));
+        $this->assertSame(Protocol::TYPE_HELLO, $messages[0]['type']);
+        $this->assertSame($tokenHash, $messages[0]['token_hash']);
+        $this->assertSame(Protocol::TYPE_TELEMETRY_BATCH, $messages[1]['type']);
+        $this->assertSame([FakeRecord::make()], $messages[1]['records']);
+    }
+
+    public function test_it_throws_an_exception_if_subsequent_writes_to_stream_fails(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        $writes = 0;
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            if ($writes === 2) {
+                return false;
+            }
+
+            $writes++;
+
+            return 3;
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(<<<'MESSAGE'
+            Unable to write to stream
+            ---
+            timed_out: false
+            blocked: true
+            eof: false
+            wrapper_type: user-space
+            stream_type: user-space
+            mode: r+
+            unread_bytes: 0
+            seekable: true
+            uri: tcp://127.0.0.1:2407
+            MESSAGE);
+
+        throw $exceptions[0];
+    }
+
+    public function test_it_reads_response_from_stream(): void
+    {
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertGreaterThan(0, StreamWrapper::type('stream_read')->count());
+        $this->assertSame(8192, StreamWrapper::type('stream_read')->value('args')[0]);
+    }
+
+    public function test_it_can_read_multiple_times_from_stream(): void
+    {
+        $bytes = str_split(SidecarReply::wire());
+        StreamWrapper::intercept('stream_read', function () use (&$bytes) {
+            return array_shift($bytes) ?? '';
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertGreaterThan(10, StreamWrapper::type('stream_read')->count());
+    }
+
+    public function test_it_throws_an_exception_if_stream_eo_fs_before_getting_the_expected_response(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        $response = ['2', ':', false];
+        StreamWrapper::intercept('stream_read', function () use (&$response) {
+            if ($response === [':']) {
+                StreamWrapper::intercept('stream_eof', fn () => true);
+            }
+
+            return array_shift($response);
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(<<<'MESSAGE'
+        Unable to read from stream
+        ---
+        timed_out: false
+        blocked: true
+        eof: false
+        wrapper_type: user-space
+        stream_type: user-space
+        mode: r+
+        unread_bytes: 0
+        seekable: true
+        uri: tcp://127.0.0.1:2407
+        MESSAGE);
+
+        throw $exceptions[0];
+    }
+
+    public function test_it_throws_when_an_unexpected_response_is_received(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        StreamWrapper::intercept('stream_read', fn () => 'XXXXXXXXXXXXXXXXXXXXXXX');
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+
+        $this->assertStringStartsWith('Unexpected response from agent [', $exceptions[0]->getMessage());
+    }
+
+    public function test_it_closes_the_stream(): void
+    {
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertSame('stream_close', StreamWrapper::$events->pluck('type')->last());
+    }
+
+    public function test_it_does_not_retrieve_meta_of_already_closed_stream(): void
+    {
+        $this->markTestSkippedWhen(version_compare(phpversion(), '8.5.0', '>='), 'Closing a userland stream within a intercepted callback is no longer supported');
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        $stream = null;
+        $this->core->ingest->streamFactory = function ($address, $timeout) use (&$stream) {
+            $stream = fopen($address, 'r+');
+
+            return $stream;
+        };
+
+        StreamWrapper::intercept('stream_read', function () use (&$stream) {
+            fclose($stream);
+
+            return false;
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage(<<<'MESSAGE'
+        Unable to read from stream
+        ---
+        closed: true
+        MESSAGE);
+
+        throw $exceptions[0];
+    }
+
+    public function test_it_stops_attempting_to_read_once_the_stream_has_reached_eof(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        $reads = 0;
+        StreamWrapper::intercept('stream_read', function () use (&$reads) {
+            $reads++;
+
+            if ($reads > 2) {
+                StreamWrapper::intercept('stream_eof', fn () => true);
+            }
+
+            return '';
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+        $this->assertInstanceOf(RuntimeException::class, $exceptions[0]);
+        $this->assertSame(<<<'MESSAGE'
+    Unexpected response from agent []
+    MESSAGE, $exceptions[0]->getMessage());
+        $this->assertSame(1, $reads);
+    }
+
+    public function test_it_only_attempts_to_read_from_the_stream_5_times(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        $reads = 0;
+        StreamWrapper::intercept('stream_read', function () use (&$reads) {
+            $reads++;
+
+            return '';
+        });
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertSame(1, $reads);
+        $this->assertCount(1, $exceptions);
+        $this->assertInstanceOf(RuntimeException::class, $exceptions[0]);
+        $this->assertSame(<<<'MESSAGE'
+    Unexpected response from agent []
+    MESSAGE, $exceptions[0]->getMessage());
+    }
+
+    public function test_it_does_not_trigger_ingest_before_reaching_threshold(): void
+    {
+        $writes = [];
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            $writes[] = $value;
+
+            return strlen($value);
+        });
+
+        for ($i = 0; $i < 499; $i++) {
+            $this->core->ingest->write(FakeRecord::make());
+        }
+
+        $this->assertCount(0, $writes);
+    }
+
+    public function test_it_triggers_ingest_after_exceeding_threshold(): void
+    {
+        $writes = [];
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            $writes[] = $value;
+
+            return strlen($value);
+        });
+
+        for ($i = 0; $i < 499; $i++) {
+            $this->core->ingest->write(FakeRecord::make());
+        }
+
+        $this->assertCount(0, $writes);
+
+        $this->core->ingest->write(FakeRecord::make());
+
+        $afterFirst = count($writes);
+        $this->assertGreaterThanOrEqual(2, $afterFirst);
+
+        for ($i = 0; $i < 499; $i++) {
+            $this->core->ingest->write(FakeRecord::make());
+        }
+
+        $this->assertSame($afterFirst, count($writes));
+
+        $this->core->ingest->write(FakeRecord::make());
+
+        $this->assertGreaterThan($afterFirst, count($writes));
+        $messages = Frame::decodeAll(implode('', $writes));
+        $batches = array_values(array_filter($messages, fn ($m) => ($m['type'] ?? null) === Protocol::TYPE_TELEMETRY_BATCH));
+        $this->assertCount(2, $batches);
+        $this->assertCount(500, $batches[1]['records']);
+    }
+
+    public function test_write_now_dispatches_an_event_containing_the_records_before_writing(): void
+    {
+        $events = [];
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) use (&$events) {
+            $events[] = $event;
+        });
+        $record = FakeRecord::make();
+
+        $this->core->ingest->writeNow($record);
+
+        $this->assertCount(1, $events);
+        $this->assertSame([$record], $events[0]->records);
+    }
+
+    public function test_a_listener_can_stop_write_now_from_ingesting_by_returning_false(): void
+    {
+        $count = 0;
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) use (&$count) {
+            $count++;
+
+            if ($count === 3 || $count === 4) {
+                return false;
+            }
+        });
+
+        for ($i = 0; $i < 6; $i++) {
+            $this->core->ingest->writeNow(FakeRecord::make());
+        }
+
+        $this->assertSame(6, $count);
+        $this->assertCount(4, StreamWrapper::type('stream_open'));
+    }
+
+    public function test_an_exception_thrown_by_a_listener_is_treated_as_unrecoverable_and_ingestion_continues(): void
+    {
+        $exceptions = [];
+        Watchtower::handleUnrecoverableExceptionsUsing(function ($e) use (&$exceptions): void {
+            $exceptions[] = $e;
+        });
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) {
+            throw new RuntimeException('Whoops!');
+        });
+
+        report('Original exception');
+        $this->core->finishExecution();
+
+        $this->assertCount(1, $exceptions);
+        $this->assertSame('Whoops!', $exceptions[0]->getMessage());
+        $this->assertCount(0, StreamWrapper::type('stream_open'));
+    }
+
+    public function test_a_listener_can_stop_ingestion_using_the_rate_limiter(): void
+    {
+        Event::listen(function (IngestingEvents $event) {
+            return ! RateLimiter::attempt(
+                key: 'watchtower-events-test',
+                maxAttempts: 2,
+                callback: fn () => true,
+                decaySeconds: 3600,
+            );
+        });
+
+        for ($i = 0; $i < 4; $i++) {
+            $this->core->ingest->writeNow(FakeRecord::make());
+        }
+
+        $this->assertCount(2, StreamWrapper::type('stream_open'));
+
+        RateLimiter::clear('watchtower-events-test');
+    }
+
+    public function test_digest_dispatches_an_event_containing_the_buffered_records_before_writing(): void
+    {
+        $events = [];
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) use (&$events) {
+            $events[] = $event;
+        });
+        $records = [FakeRecord::make(), FakeRecord::make(), FakeRecord::make()];
+
+        foreach ($records as $record) {
+            $this->core->ingest->write($record);
+        }
+        $this->core->ingest->digest();
+
+        $this->assertCount(1, $events);
+        $this->assertSame($records, $events[0]->records);
+    }
+
+    public function test_digest_does_not_dispatch_an_event_when_the_buffer_is_empty(): void
+    {
+        $events = [];
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) use (&$events) {
+            $events[] = $event;
+        });
+
+        $this->core->ingest->digest();
+
+        $this->assertCount(0, $events);
+    }
+
+    public function test_a_listener_can_stop_digest_from_ingesting_by_returning_false(): void
+    {
+        Event::listen(IngestingEvents::class, fn () => false);
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->ingest->digest();
+
+        $this->assertCount(0, StreamWrapper::type('stream_open'));
+        $this->assertSame(0, $this->core->ingest->buffer->count());
+    }
+
+    public function test_write_auto_digesting_after_reaching_the_threshold_dispatches_an_event_and_can_be_stopped(): void
+    {
+        $count = 0;
+        Event::listen(IngestingEvents::class, function (IngestingEvents $event) use (&$count) {
+            $count++;
+
+            return false;
+        });
+
+        for ($i = 0; $i < 500; $i++) {
+            $this->core->ingest->write(FakeRecord::make());
+        }
+
+        $this->assertSame(1, $count);
+        $this->assertCount(0, StreamWrapper::type('stream_open'));
+        $this->assertSame(0, $this->core->ingest->buffer->count());
+    }
+
+    public function test_it_closes_the_stream_if_an_error_occurs_while_writing(): void
+    {
+        StreamWrapper::intercept('stream_write', fn () => throw new RuntimeException('Whoops!'));
+        $exceptions = collect();
+        Watchtower::handleUnrecoverableExceptionsUsing($exceptions->push(...));
+
+        $this->core->ingest->write(FakeRecord::make());
+        $this->core->finishExecution();
+
+        $this->assertSame('stream_close', StreamWrapper::$events->pluck('type')->last());
+        $this->assertCount(1, $exceptions);
+        $this->assertSame('Whoops!', $exceptions[0]->getMessage());
+    }
+}
+
+class StreamWrapper
+{
+    public $context;
+
+    private static array $on = [];
+
+    public static Collection $events;
+
+    public static string $readBuffer = '';
+
+    public static int $readOffset = 0;
+
+    public function __call(string $name, array $arguments)
+    {
+        if (! array_key_exists($name, static::$on)) {
+            throw new RuntimeException("StreamFake method not implemented [{$name}]");
+        }
+
+        static::$events[] = [
+            'type' => $name,
+            'args' => $arguments,
+        ];
+
+        return call_user_func_array(static::$on[$name], $arguments);
+    }
+
+    public static function intercept(string $method, callable $callback): void
+    {
+        static::$on[$method] = $callback;
+    }
+
+    public static function type(string $type): Collection
+    {
+        return static::$events->where('type', $type);
+    }
+
+    public static function reset(): void
+    {
+        static::$events = new Collection;
+
+        static::$on = [
+            'stream_open' => function (string $path, string $mode, int $options, ?string &$openedPath): bool {
+                static::$readBuffer = SidecarReply::wire();
+                static::$readOffset = 0;
+
+                return true;
+            },
+            'stream_set_option' => fn (int $option, int $arg1, int $arg2): bool => true,
+            'stream_write' => fn (string $value): int => strlen($value),
+            'stream_read' => function (int $length): string {
+                $chunk = substr(static::$readBuffer, static::$readOffset, $length);
+                static::$readOffset += strlen($chunk);
+
+                return $chunk;
+            },
+            'stream_eof' => fn (): bool => false,
+            'stream_flush' => fn (): bool => true,
+            'stream_close' => function (): void {
+                //
+            },
+        ];
+    }
+}

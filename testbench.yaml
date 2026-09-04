@@ -1,0 +1,19 @@
+providers:
+  - Watchtower\Laravel\WatchtowerServiceProvider
+  - Laravel\Horizon\HorizonServiceProvider
+  - Laravel\Vapor\VaporServiceProvider
+  - Livewire\LivewireServiceProvider
+
+workbench:
+  start: '/'
+  install: true
+  discovers:
+    web: true
+    commands: true
+    views: true
+  build:
+    - create-sqlite-db
+    - migrate-refresh
+  sync:
+    - from: workbench/storage/logs
+      to: storage/logs

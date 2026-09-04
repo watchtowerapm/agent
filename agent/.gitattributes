@@ -1,0 +1,27 @@
+* text=auto
+
+*.blade.php diff=html
+*.css diff=css
+*.html diff=html
+*.md diff=markdown
+*.php diff=php
+
+/*.md export-ignore
+/.editorconfig export-ignore
+/.env.example export-ignore
+/.gitattributes export-ignore
+/.github export-ignore
+/.gitignore export-ignore
+/box.json.dist export-ignore
+/build.sh export-ignore
+/composer-dependency-analyser.php export-ignore
+/package-lock.json export-ignore
+/package.json export-ignore
+/phpstan.neon.dist export-ignore
+/phpunit.xml.dist export-ignore
+/pint.ci.json export-ignore
+/pint.json export-ignore
+/scoper.inc.php export-ignore
+/src export-ignore
+/tests export-ignore
+/watch.js export-ignore

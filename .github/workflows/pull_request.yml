@@ -1,0 +1,327 @@
+name: Pull Request
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: false
+
+env:
+  minimum_supported_php_version: "8.2"
+  package_extensions: none, mbstring, curl, ctype, tokenizer, mongodb, xml, pdo, fileinfo, dom, xmlwriter, simplexml, sqlite3, pdo_sqlite, posix, redis
+  agent_extensions: none, mbstring, curl, ctype, dom, simplexml, tokenizer, xml, xmlwriter, iconv
+
+permissions:
+  contents: read
+
+jobs:
+  ## Run coding standards and static analysis before building the agent
+  package_static_analysis:
+    name: Package static analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP ${{ env.minimum_supported_php_version }} and tooling
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ env.minimum_supported_php_version }}
+          extensions: ${{ env.package_extensions }}
+          ini-values: error_reporting=E_ALL
+          tools: composer:v2, composer-dependency-analyser
+          coverage: none
+
+      # See: https://github.com/shivammathur/setup-php#cache-composer-dependencies
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-package-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-package-composer
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Check platform
+        run: composer check-platform-reqs
+
+      - name: Check dependencies
+        run: composer-dependency-analyser
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan --verbose
+
+  agent_static_analysis:
+    name: Agent static analysis
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./agent
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP ${{ env.minimum_supported_php_version }} and tooling
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ env.minimum_supported_php_version }}
+          extensions: ${{ env.agent_extensions }}
+          ini-values: error_reporting=E_ALL
+          tools: composer:v2, composer-dependency-analyser
+          coverage: none
+
+      # See: https://github.com/shivammathur/setup-php#cache-composer-dependencies
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-agent-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-agent-composer
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Check platform
+        run: composer check-platform-reqs
+
+      - name: Check dependencies
+        run: composer-dependency-analyser
+
+      - name: Run PHPStan
+        run: vendor/bin/phpstan --verbose
+
+  coding_standards:
+    name: Coding standards
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP ${{ env.minimum_supported_php_version }} and tooling
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ env.minimum_supported_php_version }}
+          extensions: ${{ env.package_extensions }}
+          ini-values: error_reporting=E_ALL
+          tools: composer:v2
+          coverage: none
+
+      # See: https://github.com/shivammathur/setup-php#cache-composer-dependencies
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-package-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-package-composer
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Run Pint (CI only)
+        run: vendor/bin/pint --config=pint.ci.json --test
+
+      - name: Run Pint
+        run: vendor/bin/pint --test
+
+  ## Builds the agent, evaluates whether it has changed, and if so commits the result
+  build_agent:
+    name: Build agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - package_static_analysis
+      - agent_static_analysis
+      - coding_standards
+    outputs:
+      agent-committed: ${{ steps.commit-agent.outputs.committed }}
+    defaults:
+      run:
+        working-directory: ./agent
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: true
+          # SHA, not branch name: checkout's refs/heads/<name>* fetch fails on
+          # Git 2.55 with Dependabot paths like dependabot/composer/agent/...
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build agent
+        id: build-agent
+        run: |
+          composer build
+          echo "version=$(cat build/signature.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Check for uncommitted agent changes
+        if: github.actor == 'dependabot[bot]'
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Agent build produced changes that need to be committed. Push an empty commit to this branch to re-run with write permissions."
+            exit 1
+          fi
+
+      - id: commit-agent
+        if: github.actor != 'dependabot[bot]'
+        uses: EndBug/add-and-commit@cc9c08ba6c8df3b93a8f2db63e89b98368ae2ae8 # v11.1.1
+        with:
+          default_author: github_actions
+          message: "Bump agent version to ${{ steps.build-agent.outputs.version }}"
+          new_branch: ${{ github.head_ref }}
+          add: '-f agent/build/agent.phar agent/build/signature.txt'
+
+  package_tests:
+    runs-on: ubuntu-latest
+    needs:
+      - build_agent
+    if: ${{ needs.build_agent.outputs.agent-committed != 'true' }}
+
+    services:
+      redis:
+        image: redis
+        ports:
+          - 6379:6379
+        options: --entrypoint redis-server
+
+    strategy:
+      matrix:
+        php: [8.2, 8.3, 8.4, 8.5]
+        laravel: [10, 11, 12, 13]
+        prefer-lowest: ["0", "1"]
+        exclude:
+          - php: 8.2
+            laravel: 13
+
+    name: Test package [PHP ${{ matrix.php }}, Laravel ${{ matrix.laravel }}${{ matrix.prefer-lowest == '1' && ', prefer lowest' || '' }}]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP ${{ matrix.php }} and tooling
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ${{ env.package_extensions }}
+          ini-values: error_reporting=E_ALL
+          tools: composer:v2
+          coverage: pcov
+
+      # See: https://github.com/shivammathur/setup-php#cache-composer-dependencies
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-package-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-package-composer
+
+      - name: Require Laravel Version
+        run: composer require laravel/framework:^${{ matrix.laravel }} --no-update
+
+      - name: Install dependencies
+        run: COMPOSER_PREFER_LOWEST=${{ matrix.prefer-lowest }} composer update --prefer-dist --no-interaction --no-progress
+
+      - name: Create database
+        run: touch tests/database.sqlite
+
+      - name: Execute tests
+        env:
+          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN }}
+          WATCHTOWER_BASE_URL: ${{ secrets.WATCHTOWER_BASE_URL }}
+        run: vendor/bin/phpunit --order-by=random --coverage-text
+
+  agent_tests:
+    runs-on: ubuntu-latest
+    needs:
+      - build_agent
+    if: ${{ needs.build_agent.outputs.agent-committed != 'true' }}
+    defaults:
+      run:
+        working-directory: ./agent
+
+    strategy:
+      matrix:
+        php: [8.2, 8.3, 8.4, 8.5]
+
+    name: Test agent [PHP ${{ matrix.php }}]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup PHP ${{ matrix.php }} and tooling
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ${{ env.agent_extensions }}
+          ini-values: error_reporting=E_ALL
+          tools: composer:v2
+          coverage: pcov
+
+      # See: https://github.com/shivammathur/setup-php#cache-composer-dependencies
+      - name: Get composer cache directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-agent-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-agent-composer
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Execute tests
+        env:
+          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN }}
+          WATCHTOWER_BASE_URL: ${{ secrets.WATCHTOWER_BASE_URL }}
+        run: vendor/bin/phpunit --order-by=random --coverage-text --show-uncovered-for-coverage-text
+
+      - name: Build and test container
+        run: |
+          # Build and run the container
+          docker build -f Dockerfile -t agent ../
+          docker run --rm -d --name agent agent:latest
+
+          # Test health check passes
+          docker exec --env WATCHTOWER_TOKEN=fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ agent php watchtower-status || exit 1
+
+          # Test health check fails
+          ! docker exec --env WATCHTOWER_TOKEN=fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ --env WATCHTOWER_INGEST_URI=127.0.0.1:1234 agent php watchtower-status || exit 1
+
+          # Stop the container
+          docker stop agent
