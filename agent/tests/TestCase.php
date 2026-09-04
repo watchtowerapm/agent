@@ -13,6 +13,7 @@ use function debug_backtrace;
 use function explode;
 use function file_get_contents;
 use function file_put_contents;
+use function getenv;
 use function hash;
 use function implode;
 use function is_array;
@@ -88,7 +89,7 @@ abstract class TestCase extends BaseTestCase
                     if ($until && $until($output)) {
                         $process->stop(1);
                     }
-                });
+                }, self::childProcessEnv());
 
                 break;
             } catch (ProcessFailedException $e) {
@@ -187,14 +188,53 @@ abstract class TestCase extends BaseTestCase
         return $this;
     }
 
-    public static function tokenHash(): string
+    public static function token(): string
     {
-        $refreshToken = $_SERVER['WATCHTOWER_TOKEN'] ?? '';
-        if (! is_string($refreshToken)) {
-            throw new RuntimeException('WATCHTOWER_TOKEN invalid');
+        foreach ([
+            $_SERVER['WATCHTOWER_TOKEN'] ?? null,
+            $_ENV['WATCHTOWER_TOKEN'] ?? null,
+            getenv('WATCHTOWER_TOKEN'),
+        ] as $value) {
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
         }
 
-        return substr(hash('xxh128', $refreshToken), 0, 7);
+        return 'fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ';
+    }
+
+    public static function baseUrl(): string
+    {
+        foreach ([
+            $_SERVER['WATCHTOWER_BASE_URL'] ?? null,
+            $_ENV['WATCHTOWER_BASE_URL'] ?? null,
+            getenv('WATCHTOWER_BASE_URL'),
+        ] as $value) {
+            if (is_string($value) && $value !== '') {
+                return $value;
+            }
+        }
+
+        return 'https://watchtower.test';
+    }
+
+    /**
+     * @param  array<string, string>  $overrides
+     * @return array<string, string>
+     */
+    public static function childProcessEnv(array $overrides = []): array
+    {
+        $env = getenv() ?: [];
+
+        $env['WATCHTOWER_TOKEN'] = self::token();
+        $env['WATCHTOWER_BASE_URL'] = self::baseUrl();
+
+        return array_merge($env, $overrides);
+    }
+
+    public static function tokenHash(): string
+    {
+        return substr(hash('xxh128', self::token()), 0, 7);
     }
 
     public static function packageVersion(): string

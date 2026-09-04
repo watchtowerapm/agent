@@ -51,10 +51,10 @@ $maxBufferLength ??= null;
  */
 
 /** @var ?string $refreshToken */
-$refreshToken ??= $_SERVER['WATCHTOWER_TOKEN'] ?? '';
+$refreshToken ??= $_SERVER['WATCHTOWER_TOKEN'] ?? getenv('WATCHTOWER_TOKEN') ?: '';
 /** @var string $refreshToken */
 /** @var ?string $baseUrl */
-$baseUrl ??= $_SERVER['WATCHTOWER_BASE_URL'] ?? '';
+$baseUrl ??= $_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: '';
 /** @var string $baseUrl */
 /** @var ?string $listenOn */
 $listenOn ??= $_SERVER['WATCHTOWER_INGEST_URI'] ?? '127.0.0.1:2407';

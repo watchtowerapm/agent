@@ -9,7 +9,6 @@ use Tests\TestCase;
 
 use function fclose;
 use function fsockopen;
-use function is_string;
 use function str_contains;
 
 class HealthCheckTest extends TestCase
@@ -30,15 +29,12 @@ class HealthCheckTest extends TestCase
             break;
         }
 
-        $token = $_SERVER['WATCHTOWER_TOKEN'] ?? '';
-        $token = is_string($token) ? $token : '';
+        $process = Process::fromShellCommandline('php '.__DIR__.'/../../watchtower-status')
+            ->setTimeout(2);
 
-        $process = Process::fromShellCommandline('php '.__DIR__.'/../../watchtower-status', env: [
+        $process->run(env: self::childProcessEnv([
             'WATCHTOWER_INGEST_URI' => '127.0.0.1:'.$port,
-            'WATCHTOWER_TOKEN' => $token,
-        ])->setTimeout(2);
-
-        $process->run();
+        ]));
 
         $this->assertSame(1, $process->getExitCode());
         $this->assertSame('', $process->getOutput());
@@ -57,13 +53,9 @@ class HealthCheckTest extends TestCase
             timeout: 10,
             until: static function ($output) use ($process, &$listenOn) {
                 if (str_contains($output, 'Authentication successful')) {
-                    $token = $_SERVER['WATCHTOWER_TOKEN'] ?? '';
-                    $token = is_string($token) ? $token : '';
-
-                    $process->run(env: [
-                        'WATCHTOWER_INGEST_URI' => $listenOn,
-                        'WATCHTOWER_TOKEN' => $token,
-                    ]);
+                    $process->run(env: self::childProcessEnv([
+                        'WATCHTOWER_INGEST_URI' => (string) $listenOn,
+                    ]));
 
                     return true;
                 }

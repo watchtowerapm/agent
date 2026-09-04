@@ -21,5 +21,7 @@
         <env name="MAIL_MAILER" value="array" />
         <env name="QUEUE_CONNECTION" value="database" />
         <env name="SQS_PREFIX" value="https://sqs.us-east-1.amazonaws.com/123456789" />
+        <env name="WATCHTOWER_BASE_URL" value="https://watchtower.test"/>
+        <env name="WATCHTOWER_TOKEN" value="fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ"/>
     </php>
 </phpunit>

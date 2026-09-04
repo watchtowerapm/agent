@@ -19,4 +19,8 @@
             <directory>src</directory>
         </include>
     </source>
+    <php>
+        <env name="WATCHTOWER_BASE_URL" value="https://watchtower.test"/>
+        <env name="WATCHTOWER_TOKEN" value="fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ"/>
+    </php>
 </phpunit>

@@ -74,7 +74,7 @@ try {
      * Input...
      */
 
-    $refreshToken = $_SERVER['WATCHTOWER_TOKEN'] ?? '';
+    $refreshToken = $_SERVER['WATCHTOWER_TOKEN'] ?? getenv('WATCHTOWER_TOKEN') ?: '';
     /** @var string $refreshToken */
     $ingestUri = $_SERVER['WATCHTOWER_INGEST_URI'] ?? '127.0.0.1:2407';
     /** @var string $ingestUri */

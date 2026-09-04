@@ -256,8 +256,8 @@ jobs:
 
       - name: Execute tests
         env:
-          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN }}
-          WATCHTOWER_BASE_URL: ${{ secrets.WATCHTOWER_BASE_URL }}
+          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN || 'fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ' }}
+          WATCHTOWER_BASE_URL: ${{ secrets.WATCHTOWER_BASE_URL || 'https://watchtower.test' }}
         run: vendor/bin/phpunit --order-by=random --coverage-text
 
   agent_tests:
@@ -307,8 +307,8 @@ jobs:
 
       - name: Execute tests
         env:
-          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN }}
-          WATCHTOWER_BASE_URL: ${{ secrets.WATCHTOWER_BASE_URL }}
+          WATCHTOWER_TOKEN: ${{ secrets.WATCHTOWER_TOKEN || 'fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ' }}
+          WATCHTOWER_BASE_URL: ${{ secrets.WATCHTOWER_BASE_URL || 'https://watchtower.test' }}
         run: vendor/bin/phpunit --order-by=random --coverage-text --show-uncovered-for-coverage-text
 
       - name: Build and test container

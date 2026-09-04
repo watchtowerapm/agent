@@ -12,3 +12,19 @@ if (! ($_SERVER['CI'] ?? false)) {
         exit(1);
     }
 }
+
+$fallbackToken = 'fakepkxoLBIOgPE0PZWadR0Ge1zHBh31ATOzXN9bBboZ';
+$fallbackBaseUrl = 'https://watchtower.test';
+
+foreach ([
+    'WATCHTOWER_TOKEN' => $fallbackToken,
+    'WATCHTOWER_BASE_URL' => $fallbackBaseUrl,
+] as $key => $fallback) {
+    $value = $_SERVER[$key] ?? $_ENV[$key] ?? getenv($key);
+
+    if (! is_string($value) || $value === '') {
+        $_SERVER[$key] = $fallback;
+        $_ENV[$key] = $fallback;
+        putenv($key.'='.$fallback);
+    }
+}
