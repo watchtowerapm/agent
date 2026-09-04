@@ -17,6 +17,7 @@ use Watchtower\LaravelAgent\Factories\BrowserFactory;
 use function date;
 use function dirname;
 use function file_get_contents;
+use function getenv;
 use function gethostname;
 use function hash;
 use function is_file;

@@ -8,6 +8,7 @@ use Symfony\Component\Process\Exception\ProcessFailedException;
 use Symfony\Component\Process\Process;
 use Throwable;
 
+use function array_merge;
 use function array_slice;
 use function debug_backtrace;
 use function explode;
