@@ -1,10 +1,14 @@
-name: Pull Request
+name: CI
 
 on:
   pull_request:
+  push:
+    branches:
+      - 1.x
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -169,7 +173,7 @@ jobs:
           persist-credentials: true
           # SHA, not branch name: checkout's refs/heads/<name>* fetch fails on
           # Git 2.55 with Dependabot paths like dependabot/composer/agent/...
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Build agent
         id: build-agent
@@ -178,7 +182,7 @@ jobs:
           echo "version=$(cat build/signature.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Check for uncommitted agent changes
-        if: github.actor == 'dependabot[bot]'
+        if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             echo "::error::Agent build produced changes that need to be committed. Push an empty commit to this branch to re-run with write permissions."
@@ -186,7 +190,7 @@ jobs:
           fi
 
       - id: commit-agent
-        if: github.actor != 'dependabot[bot]'
+        if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
         uses: EndBug/add-and-commit@cc9c08ba6c8df3b93a8f2db63e89b98368ae2ae8 # v11.1.1
         with:
           default_author: github_actions
