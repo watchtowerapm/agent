@@ -41,6 +41,7 @@ use function json_encode;
 use function report;
 use function response;
 use function str_contains;
+use function str_ends_with;
 use function str_repeat;
 use function tap;
 use function trim;
@@ -857,18 +858,65 @@ class ExceptionSensorTest extends TestCase
         $ingest->assertWrite(0, 'exception:0.trace', function ($value) {
             $frames = collect(json_decode($value, true));
 
-            $this->assertCapturedSourceContains($frames, 'ExceptionTestController.php', "Mail::to('test@test.com')");
-            $this->assertCapturedSourceContains($frames, 'RouteMiddleware.php', '$this->watchtower->stage(ExecutionStage::Action)');
-            $this->assertCapturedSourceContains($frames, 'GlobalMiddleware.php', '$this->watchtower->captureRequestPreview($request)');
+            $mail = $this->exceptionFrameEndingWith($frames, 'Mail/MyMail.php:28', required: false);
 
-            $mail = $frames->first(fn ($frame) => str_contains((string) ($frame['file'] ?? ''), 'Mail/MyMail.php'));
-
-            if (is_array($mail) && is_array($mail['code'] ?? null)) {
-                $this->assertTrue(
-                    collect($mail['code'])->contains(fn ($line) => str_contains((string) $line, 'class MyMail') || str_contains((string) $line, 'function envelope')),
-                    'Expected captured MyMail source, got: '.json_encode($mail['code']),
-                );
+            if ($mail !== null) {
+                $this->assertEquals([
+                    23 => '    /**',
+                    24 => '     * Get the message envelope.',
+                    25 => '     */',
+                    26 => '    public function envelope(): Envelope',
+                    27 => '    {',
+                    28 => '        return new Envelope(',
+                    29 => '            subject: $this->subject,',
+                    30 => '        );',
+                    31 => '    }',
+                    32 => '',
+                    33 => '    /**',
+                ], $mail['code']);
             }
+
+            $this->assertEquals([
+                13 => 'final class ExceptionTestController',
+                14 => '{',
+                15 => '    public function __invoke()',
+                16 => '    {',
+                17 => '        try {',
+                18 => '            Mail::to(\'test@test.com\')->send(new MyMail([\'effect\' => \'This explodes\']));',
+                19 => '        } catch (Exception $e) {',
+                20 => '            report($e);',
+                21 => '',
+                22 => '            abort(500, \'Exploding as expected\');',
+                23 => '        }',
+            ], $this->exceptionFrameEndingWith($frames, 'ExceptionTestController.php:18')['code']);
+
+            $this->assertEquals([
+                29 => '            $this->watchtower->stage(ExecutionStage::Action);',
+                30 => '        } catch (Throwable $e) {',
+                31 => '            $this->watchtower->report($e, handled: true);',
+                32 => '        }',
+                33 => '',
+                34 => '        $response = $next($request);',
+                35 => '',
+                36 => '        // If an exception occurs in the action phase, the usual',
+                37 => '        // ResponsePrepared event is not fired. This fallback',
+                38 => '        // ensures that we go to the AfterMiddleware stage.',
+                39 => '        try {',
+            ], $this->exceptionFrameEndingWith($frames, 'RouteMiddleware.php:34')['code']);
+
+            $this->assertEquals([
+                48 => '            $this->watchtower->captureRequestPreview($request);',
+                49 => '        } catch (Throwable $e) {',
+                50 => '            $this->watchtower->report($e, handled: true);',
+                51 => '        }',
+                52 => '',
+                53 => '        return $next($request);',
+                54 => '    }',
+                55 => '',
+                56 => '    public function terminate(Request $request, Response $response): void',
+                57 => '    {',
+                58 => '        if ($this->hasTerminated || Compatibility::$terminatingEventExists) {',
+            ], $this->exceptionFrameEndingWith($frames, 'GlobalMiddleware.php:53')['code']);
 
             return true;
         });
@@ -1062,17 +1110,17 @@ class ExceptionSensorTest extends TestCase
 
     /**
      * @param  \Illuminate\Support\Collection<int, mixed>  $frames
+     * @return ($required is true ? array<string, mixed> : array<string, mixed>|null)
      */
-    private function assertCapturedSourceContains($frames, string $fileNeedle, string $sourceNeedle): void
+    private function exceptionFrameEndingWith($frames, string $suffix, bool $required = true): ?array
     {
-        $frame = $frames->first(fn ($frame) => str_contains((string) ($frame['file'] ?? ''), $fileNeedle));
+        $frame = $frames->first(fn ($frame) => str_ends_with((string) ($frame['file'] ?? ''), $suffix));
 
-        $this->assertIsArray($frame, "No exception frame contained [{$fileNeedle}]. Files: ".$frames->pluck('file')->filter()->implode(', '));
-        $this->assertIsArray($frame['code'] ?? null, "Expected source code for [{$fileNeedle}], file [{$frame['file']}]");
-        $this->assertTrue(
-            collect($frame['code'])->contains(fn ($line) => str_contains((string) $line, $sourceNeedle)),
-            "Expected captured source for [{$fileNeedle}] to contain [{$sourceNeedle}], got: ".json_encode($frame['code']),
-        );
+        if ($required) {
+            $this->assertIsArray($frame, "No exception frame ended with [{$suffix}]. Files: ".$frames->pluck('file')->filter()->implode(', '));
+        }
+
+        return is_array($frame) ? $frame : null;
     }
 }
 
