@@ -14,6 +14,9 @@ This skill helps configure Watchtower data collection to balance observability, 
 
 Use this skill and [reference.md](reference.md) for sampling, filtering, and redaction. Environment variables use the `WATCHTOWER_*` prefix. The public API is `Watchtower\Laravel\Facades\Watchtower`.
 
+Package version is **1.0.0**. Agent ↔ sidecar framing is documented in the repository [docs/protocol.md](../../../../docs/protocol.md) (from package root: `docs/protocol.md`).
+
+
 ## Data Collection Flow
 
 Watchtower processes events through three stages:

@@ -4,7 +4,7 @@
 
 ## Supported Versions
 
-Only the latest major version of `watchtowerapm/agent` receives security fixes.
+The `1.x` line of `watchtowerapm/agent` (package **1.0.0** and follow-up 1.x releases) receives security fixes.
 
 ## Reporting a Vulnerability
 

@@ -45,7 +45,7 @@ class TcpServerFake extends EventEmitter implements ServerInterface
             'type' => Protocol::TYPE_HELLO,
             'protocol' => $protocol,
             'protocol_version' => $protocolVersion,
-            'agent_version' => '2.0.0',
+            'agent_version' => '1.0.0',
             'sdk' => 'laravel',
             'php_version' => PHP_VERSION,
             'token_hash' => $tokenHash,

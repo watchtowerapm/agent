@@ -1,6 +1,6 @@
 {
     "name": "watchtowerapm/agent",
-    "version": "2.0.0",
+    "version": "1.0.0",
     "description": "A modern, open-source Laravel APM agent inspired by Laravel Nightwatch and the best of modern observability tooling.",
     "keywords": [
         "watchtower",

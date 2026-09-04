@@ -8,7 +8,7 @@ body:
     attributes:
       label: Watchtower Agent Version
       description: Provide the watchtowerapm/agent version that you are using.
-      placeholder: 1.6.1
+      placeholder: 1.0.0
     validations:
       required: true
   - type: input

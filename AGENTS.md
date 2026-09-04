@@ -4,6 +4,8 @@
 
 Watchtower Agent is a Laravel monitoring package derived from laravel/nightwatch (MIT). It gathers metrics in Laravel applications and transmits them to a self-hosted Watchtower instance.
 
+Package version **1.0.0**. Contributor docs: `docs/README.md`.
+
 ## Code Style & Formatting
 
 - **Use Laravel Pint** with the project's configuration (`pint.json`)
@@ -115,8 +117,10 @@ final class QueryExecutedListener
 
 ## Compatibility
 
-- **Laravel versions**: Support Laravel 10, 11, and 12
+- **Laravel versions**: Support Laravel 10, 11, 12, and 13
 - **PHP versions**: Minimum PHP 8.2
+- **Package version**: `version.txt` (1.0.0). Independent of `protocol_version` (1)
+- **Protocol docs**: `docs/protocol.md` — update when changing HELLO/WELCOME/batch
 - **Backward compatibility**: Maintain backward compatibility within major versions
 - **Compatibility layer**: Use `Compatibility` class for version-specific code
 
@@ -237,7 +241,8 @@ Compatibility flags in the `Compatibility` class are used to handle version-spec
 
 - **Branch**: Work on `1.x` branch
 - **Changelog**: Update `CHANGELOG.md` for user-facing changes
-- **Version**: Version managed in `version.txt`
+- **Version**: Package version in `version.txt` and `composer.json` (currently 1.0.0)
+- **Docs**: Keep `docs/` in sync with protocol and CI behaviour
 - **Commits**: Write clear, descriptive commit messages
 
 ## Development Workflow
