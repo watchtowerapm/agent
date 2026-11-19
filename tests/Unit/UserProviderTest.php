@@ -28,8 +28,10 @@ class UserProviderTest extends TestCase
 
     public function test_it_limits_the_length_of_the_user_identifier(): void
     {
+        // Auth::login() reads the password hash for the session (Laravel 12.x).
         Auth::login(new GenericUser([
             'id' => str_repeat('x', 1000),
+            'password' => '',
         ]));
 
         $this->assertSame(1000, strlen(Auth::id()));
@@ -40,8 +42,10 @@ class UserProviderTest extends TestCase
     {
         $id = $this->core->executionState->user->id();
 
+        // Auth::login() reads the password hash for the session (Laravel 12.x).
         Auth::login(new GenericUser([
             'id' => str_repeat('x', 1000),
+            'password' => '',
         ]));
 
         $this->assertSame(str_repeat('x', 255), $id->jsonSerialize());
