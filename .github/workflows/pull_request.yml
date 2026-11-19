@@ -171,6 +171,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           persist-credentials: true
+          # Pushes to 1.x commit the rebuilt phar with the write deploy key, which the
+          # "Protect 1.x" ruleset lets bypass (GITHUB_TOKEN cannot). Its commit starts a new
+          # run, which rebuilds the same phar and so commits nothing. PRs use GITHUB_TOKEN.
+          ssh-key: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/1.x') && secrets.AGENT_DEPLOY_KEY || '' }}
           # SHA, not branch name: checkout's refs/heads/<name>* fetch fails on
           # Git 2.55 with Dependabot paths like dependabot/composer/agent/...
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -190,8 +194,8 @@ jobs:
           fi
 
       # Human PRs and 1.x pushes: commit a rebuilt phar/signature when Box output changed.
-      # Dependabot PRs do not get a write token; GITHUB_TOKEN commits on 1.x also do not
-      # start a follow-up workflow, so tests still run on those pushes (see jobs below).
+      # Dependabot PRs do not get a write token. On 1.x the deploy-key commit starts a new
+      # run; tests still run on the current one too (see jobs below).
       - id: commit-agent
         if: github.actor != 'dependabot[bot]' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/1.x')
         uses: EndBug/add-and-commit@cc9c08ba6c8df3b93a8f2db63e89b98368ae2ae8 # v11.1.1
