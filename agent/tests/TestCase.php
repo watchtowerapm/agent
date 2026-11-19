@@ -85,7 +85,9 @@ abstract class TestCase extends BaseTestCase
                     throw new RuntimeException('Unable to write test payload file.');
                 }
 
-                $process = Process::fromShellCommandline('php '.__DIR__.'/agent-wrapper.php')
+                // One pipe for stdout and stderr, so [INFO] and [ERROR] lines keep the order
+                // they were written in; two pipes are read in whatever order data arrives.
+                $process = Process::fromShellCommandline('php '.__DIR__.'/agent-wrapper.php 2>&1')
                     ->setTimeout($timeout);
 
                 $process->mustRun(static function (string $type, string $o) use ($until, $process, &$output) {

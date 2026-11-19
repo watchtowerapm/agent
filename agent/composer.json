@@ -72,6 +72,9 @@
     "config": {
         "autoloader-suffix": "zUjV6thn8dELeOw6",
         "classmap-authoritative": true,
+        "platform": {
+            "php": "8.2.0"
+        },
         "sort-packages": true
     },
     "minimum-stability": "stable",
