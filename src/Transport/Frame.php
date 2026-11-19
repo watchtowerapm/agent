@@ -5,12 +5,12 @@ namespace Watchtower\Laravel\Transport;
 use JsonException;
 use UnexpectedValueException;
 
-use function ctype_digit;
 use function is_array;
 use function json_decode;
 use function json_encode;
 use function strlen;
 use function strpos;
+use function strspn;
 use function substr;
 
 /**
@@ -88,7 +88,7 @@ final class Frame
 
         $prefix = substr($wire, $offset, $newline - $offset);
 
-        if ($prefix === '' || strlen($prefix) > self::MAX_PREFIX_DIGITS || ! ctype_digit($prefix)) {
+        if ($prefix === '' || strlen($prefix) > self::MAX_PREFIX_DIGITS || strspn($prefix, '0123456789') !== strlen($prefix)) {
             throw new UnexpectedValueException('Invalid Watchtower frame: length prefix must be a positive integer.');
         }
 
