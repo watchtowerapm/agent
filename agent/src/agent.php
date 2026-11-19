@@ -29,6 +29,7 @@ use function str_replace;
 use function str_starts_with;
 use function strtolower;
 use function substr;
+use function sys_get_temp_dir;
 
 require __DIR__.'/bootstrap.php';
 
@@ -46,6 +47,8 @@ $loop ??= null;
 $clock ??= null;
 /** @var ?int $maxBufferLength */
 $maxBufferLength ??= null;
+/** @var ?float $connectionIdleTimeout Seconds before an unfinished local connection is closed; 0 disables. */
+$connectionIdleTimeout ??= (float) Protocol::IDLE_TIMEOUT_SECONDS;
 
 /*
  * Input...
@@ -68,6 +71,13 @@ $authenticationTimeout ??= 10; // @phpstan-ignore varTag.nativeType
 $ingestConnectionTimeout ??= 5; // @phpstan-ignore varTag.nativeType
 /** @var ?float $ingestTimeout */
 $ingestTimeout ??= 10; // @phpstan-ignore varTag.nativeType
+// Where undelivered payloads wait until Watchtower is reachable; '' turns the spool off.
+$spoolEnv = static fn (string $key): string => (string) ($_SERVER[$key] ?? getenv($key) ?: ''); // @phpstan-ignore cast.string
+/** @var ?string $spoolPath */
+$spoolPath ??= $spoolEnv('WATCHTOWER_SPOOL_PATH') ?: sys_get_temp_dir().'/watchtower-agent-spool-'.substr(hash('xxh128', $refreshToken), 0, 12); // @phpstan-ignore varTag.nativeType
+/** @var string $spoolPath */
+$spoolMaxBytes = (int) ($spoolEnv('WATCHTOWER_SPOOL_MAX_MB') ?: 100) * 1024 * 1024;
+$spoolMaxAge = (int) ($spoolEnv('WATCHTOWER_SPOOL_MAX_AGE_HOURS') ?: 24) * 3600;
 /** @var ?string $server */
 $server ??= (string) gethostname(); // @phpstan-ignore varTag.nativeType
 /** @var ?bool $silent */
@@ -173,8 +183,7 @@ $ingestDetailsBrowser = $browserFactory(
         'accept' => 'application/json',
         'authorization' => "Bearer {$refreshToken}",
         'content-type' => 'application/json',
-        // Nightwatch-compatible ingest header; Watchtower ingest accepts this key.
-        'nightwatch-server' => $server,
+        'watchtower-server' => $server,
         'user-agent' => 'WatchtowerAgent/'.$packageVersion,
     ],
     baseUrl: rtrim($baseUrl, '/'),
@@ -199,7 +208,7 @@ $ingestBrowser = $browserFactory(
         'accept' => 'application/json',
         'content-encoding' => 'gzip',
         'content-type' => 'application/json',
-        'nightwatch-server' => $server,
+        'watchtower-server' => $server,
         'user-agent' => 'WatchtowerAgent/'.$packageVersion,
     ],
 );
@@ -215,6 +224,8 @@ $ingest = new Ingest(
     onIngestSuccess: static fn (ResponseInterface $response, float $duration) => $info('Ingest successful ['.round($duration, 3).'s]'),
     onIngestError: static fn (string $message, float $duration) => $error('Ingest failed ['.round($duration, 3).'s]: '.$message),
     onOverQuota: static fn (string $message, float $duration) => $error('Ingest attempted ['.round($duration, 3).'s]: '.$message),
+    spool: $spoolPath === '' ? null : new Spool($spoolPath, $spoolMaxBytes, $spoolMaxAge, $clock),
+    onSpooled: static fn (int $waiting) => $info("Uploads busy: kept the payload to send later [{$waiting} waiting]"),
 );
 
 $server = new Server(
@@ -234,6 +245,8 @@ $server = new Server(
         });
     },
     onInvalidTokenHash: static fn () => $error('Incoming token hash mismatch! Check your application/agent configuration.'),
+    loop: $loop,
+    idleTimeout: $connectionIdleTimeout,
 );
 
 $checkSignature = new CheckSignature(

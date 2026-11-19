@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use Tests\BrowserFake;
 use Tests\Connection;
+use Tests\IdleConnection;
 use Tests\LoopFake;
 use Tests\Request;
 use Tests\Response;
@@ -11,6 +12,7 @@ use Tests\TcpServerFake;
 use Tests\TestCase;
 use Tests\Timer;
 use Watchtower\LaravelAgent\Frame;
+use Watchtower\LaravelAgent\Protocol;
 
 use function array_fill;
 use function count;
@@ -321,7 +323,79 @@ class ServerTest extends TestCase
         );
     }
 
-    private function assertProtocolRejected(string $wire, string $code): void
+    public function test_an_unauthenticated_client_cannot_stop_the_sidecar(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame('INVALID', protocolVersion: 99),
+            'token_mismatch',
+            '{date} {error} Incoming token hash mismatch! Check your application/agent configuration.',
+        );
+    }
+
+    public function test_it_rejects_an_invalid_length_prefix_without_waiting(): void
+    {
+        $this->assertProtocolRejected(
+            "abc\n{\"type\":\"hello\"}",
+            'invalid_frame',
+            '{date} {error} Connection error: Invalid frame received: Invalid Watchtower frame: length prefix must be a positive integer\.',
+        );
+    }
+
+    public function test_it_rejects_frames_larger_than_the_limit(): void
+    {
+        $this->assertProtocolRejected(
+            (Protocol::MAX_FRAME_BYTES + 1)."\n{",
+            'invalid_frame',
+            '{date} {error} Connection error: Invalid frame received: Invalid Watchtower frame: size \[\d+\] is out of range\.',
+        );
+    }
+
+    public function test_it_rejects_records_that_are_not_a_list(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).Frame::encode([
+                'type' => Protocol::TYPE_TELEMETRY_BATCH,
+                'protocol' => Protocol::NAME,
+                'protocol_version' => Protocol::VERSION,
+                'batch_version' => Protocol::BATCH_VERSION,
+                'session_id' => 'sess_test',
+                'sequence' => 1,
+                'records' => ['t' => 'request'],
+            ]),
+            'invalid_records',
+        );
+    }
+
+    public function test_it_closes_connections_that_stay_idle(): void
+    {
+        $loop = new LoopFake(runForSeconds: 10);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([Response::jwt()]);
+        $ingestBrowser = new BrowserFake;
+
+        $loop->addTimer(1, new IdleConnection($server));
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+            connectionIdleTimeout: 5,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $server->assertOpen();
+        $connection = $server->connections[0];
+        $this->assertTrue($connection->closed);
+        $this->assertSame('idle_timeout', Frame::decodeAll($connection->payload)[0]['code'] ?? null);
+        $this->assertLogMatches(<<<'OUTPUT'
+            {date} {info} Authentication successful {duration}
+            {date} {error} Connection error: Connection idle for 5s; closed\.
+            OUTPUT, $output);
+    }
+
+    private function assertProtocolRejected(string $wire, string $code, ?string $extraLog = null): void
     {
         $loop = new LoopFake(runForSeconds: 1);
         $server = new TcpServerFake;
@@ -347,9 +421,10 @@ class ServerTest extends TestCase
         $this->assertNotEmpty($messages);
         $last = $messages[count($messages) - 1];
         $this->assertSame($code, $last['code'] ?? null);
-        $this->assertLogMatches(<<<'OUTPUT'
-            {date} {info} Authentication successful {duration}
-            OUTPUT, $output);
+        $this->assertLogMatches(
+            '{date} {info} Authentication successful {duration}'.($extraLog === null ? '' : "\n{$extraLog}"),
+            $output,
+        );
         $ingestBrowser->assertSent([]);
     }
 }

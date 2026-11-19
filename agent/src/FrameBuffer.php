@@ -2,15 +2,16 @@
 
 namespace Watchtower\LaravelAgent;
 
-use Throwable;
+use UnexpectedValueException;
 
 use function array_shift;
-use function strlen;
-use function strpos;
 use function substr;
 
 /**
  * Incremental parser for Watchtower length-prefixed JSON frames.
+ *
+ * Once the stream contains bytes that can never form a valid frame, the buffer stops parsing
+ * and reports the reason through error(); the server then rejects the connection.
  *
  * @internal
  */
@@ -23,8 +24,14 @@ final class FrameBuffer
      */
     private array $messages = [];
 
+    private ?string $error = null;
+
     public function append(string $chunk): void
     {
+        if ($this->error !== null) {
+            return;
+        }
+
         $this->buffer .= $chunk;
         $this->drain();
     }
@@ -51,29 +58,27 @@ final class FrameBuffer
         return $this->buffer;
     }
 
+    public function error(): ?string
+    {
+        return $this->error;
+    }
+
     private function drain(): void
     {
-        while (true) {
-            $newline = strpos($this->buffer, "\n");
-
-            if ($newline === false) {
-                return;
-            }
-
-            $size = (int) substr($this->buffer, 0, $newline);
-            $start = $newline + 1;
-            $end = $start + $size;
-
-            if ($size < 1 || strlen($this->buffer) < $end) {
-                return;
-            }
-
+        while ($this->buffer !== '') {
             try {
-                [$message, $consumed] = Frame::decodeOne($this->buffer, 0);
-            } catch (Throwable) {
+                $decoded = Frame::tryDecodeOne($this->buffer);
+            } catch (UnexpectedValueException $e) {
+                $this->error = $e->getMessage();
+
                 return;
             }
 
+            if ($decoded === null) {
+                return;
+            }
+
+            [$message, $consumed] = $decoded;
             $this->messages[] = $message;
             $this->buffer = substr($this->buffer, $consumed);
         }

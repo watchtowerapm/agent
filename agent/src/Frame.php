@@ -2,21 +2,31 @@
 
 namespace Watchtower\LaravelAgent;
 
-use RuntimeException;
+use JsonException;
+use UnexpectedValueException;
 
+use function is_array;
 use function json_decode;
 use function json_encode;
 use function strlen;
 use function strpos;
+use function strspn;
 use function substr;
 
 /**
  * Length-prefixed JSON frames: `{byte_length}\\n{json}`.
  *
+ * Keep identical to the other copy (SDK: `src/Transport/Frame.php`, sidecar: `agent/src/Frame.php`).
+ *
  * @internal
  */
 final class Frame
 {
+    /**
+     * Longest accepted length prefix (digits). 9 digits covers MAX_FRAME_BYTES.
+     */
+    private const MAX_PREFIX_DIGITS = 9;
+
     /**
      * @param  array<string, mixed>  $message
      */
@@ -45,27 +55,67 @@ final class Frame
     }
 
     /**
+     * Decode one complete frame. Throws when the frame is incomplete or invalid.
+     *
      * @return array{0: array<string, mixed>, 1: int}
      */
     public static function decodeOne(string $wire, int $offset = 0): array
     {
+        return self::tryDecodeOne($wire, $offset)
+            ?? throw new UnexpectedValueException('Invalid Watchtower frame: truncated body.');
+    }
+
+    /**
+     * Decode one frame if enough bytes have arrived.
+     *
+     * Returns null when more bytes are needed. Throws UnexpectedValueException when the bytes
+     * can never become a valid frame (bad length prefix, oversized frame, or a body that is not
+     * a JSON object), so callers can fail fast instead of waiting for a timeout.
+     *
+     * @return array{0: array<string, mixed>, 1: int}|null
+     */
+    public static function tryDecodeOne(string $wire, int $offset = 0): ?array
+    {
         $newline = strpos($wire, "\n", $offset);
 
         if ($newline === false) {
-            throw new RuntimeException('Invalid Watchtower frame: missing length prefix.');
+            if (strlen($wire) - $offset > self::MAX_PREFIX_DIGITS) {
+                throw new UnexpectedValueException('Invalid Watchtower frame: missing length prefix.');
+            }
+
+            return null;
         }
 
-        $size = (int) substr($wire, $offset, $newline - $offset);
+        $prefix = substr($wire, $offset, $newline - $offset);
+
+        if ($prefix === '' || strlen($prefix) > self::MAX_PREFIX_DIGITS || strspn($prefix, '0123456789') !== strlen($prefix)) {
+            throw new UnexpectedValueException('Invalid Watchtower frame: length prefix must be a positive integer.');
+        }
+
+        $size = (int) $prefix;
+
+        if ($size < 2 || $size > Protocol::MAX_FRAME_BYTES) {
+            throw new UnexpectedValueException("Invalid Watchtower frame: size [{$size}] is out of range.");
+        }
+
         $start = $newline + 1;
         $end = $start + $size;
 
-        if ($size < 1 || strlen($wire) < $end) {
-            throw new RuntimeException('Invalid Watchtower frame: truncated body.');
+        if (strlen($wire) < $end) {
+            return null;
+        }
+
+        try {
+            $message = json_decode(substr($wire, $start, $size), true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $e) {
+            throw new UnexpectedValueException('Invalid Watchtower frame: body is not valid JSON.', previous: $e);
+        }
+
+        if (! is_array($message)) {
+            throw new UnexpectedValueException('Invalid Watchtower frame: body must be a JSON object.');
         }
 
         /** @var array<string, mixed> $message */
-        $message = json_decode(substr($wire, $start, $size), true, 512, JSON_THROW_ON_ERROR);
-
         return [$message, $end];
     }
 }

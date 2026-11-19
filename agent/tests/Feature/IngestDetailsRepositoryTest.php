@@ -195,7 +195,7 @@ class IngestDetailsRepositoryTest extends TestCase
             'accept' => 'application/json',
             'authorization' => "Bearer {$token}",
             'content-type' => 'application/json',
-            'nightwatch-server' => gethostname(),
+            'watchtower-server' => gethostname(),
             'user-agent' => 'WatchtowerAgent/'.self::packageVersion(),
         ], $browser->headers);
         $browser->assertSent([

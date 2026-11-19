@@ -3,19 +3,30 @@
 namespace Watchtower\LaravelAgent;
 
 use Closure;
+use React\EventLoop\LoopInterface;
+use React\EventLoop\TimerInterface;
 use React\Socket\ConnectionInterface;
 use React\Socket\ServerInterface;
 use Throwable;
 
+use function array_is_list;
 use function bin2hex;
 use function call_user_func;
 use function count;
+use function hash_equals;
 use function is_array;
 use function is_int;
 use function is_string;
 use function json_encode;
 use function random_bytes;
 
+/**
+ * Local TCP endpoint the Laravel package talks to. Each connection is one exchange:
+ * HELLO → WELCOME, then one PING or TELEMETRY_BATCH → ACK, then the sidecar closes it.
+ *
+ * Checks run in this order so unauthenticated clients learn as little as possible and can
+ * never stop the sidecar: frame validity, HELLO first, token, protocol, then the command.
+ */
 class Server
 {
     /**
@@ -36,6 +47,8 @@ class Server
         private Closure $onPayloadReceived,
         private Closure $onInvalidPayloadVersion,
         private Closure $onInvalidTokenHash,
+        private ?LoopInterface $loop = null,
+        private float $idleTimeout = 0.0,
     ) {
         //
     }
@@ -49,35 +62,59 @@ class Server
             $sessionId = null;
             $expectedSequence = 1;
             $recordsJson = null;
-            $closedByUs = false;
+            $finished = false;
+            $idleTimer = $this->startIdleTimer($connection, $finished);
 
-            $connection->on('data', function (string $chunk) use ($connection, $server, $frames, &$sessionId, &$expectedSequence, &$recordsJson, &$closedByUs): void {
+            $finish = function () use (&$finished, &$idleTimer): void {
+                $finished = true;
+
+                if ($idleTimer !== null) {
+                    $this->loop?->cancelTimer($idleTimer);
+                    $idleTimer = null;
+                }
+            };
+
+            $connection->on('data', function (string $chunk) use ($connection, $server, $frames, &$sessionId, &$expectedSequence, &$recordsJson, &$finished, $finish): void {
+                if ($finished) {
+                    return;
+                }
+
                 $frames->append($chunk);
 
-                while ($message = $frames->shift()) {
+                if ($frames->error() !== null) {
+                    $this->reject($connection, Protocol::ERROR_INVALID_FRAME);
+                    $finish();
+                    call_user_func($this->onConnectionError, "Invalid frame received: {$frames->error()}");
+
+                    return;
+                }
+
+                while (($message = $frames->shift()) !== null) {
                     $type = $message['type'] ?? null;
 
                     if ($sessionId === null) {
                         if ($type !== Protocol::TYPE_HELLO) {
-                            $this->reject($connection, 'expected_hello');
-                            $closedByUs = true;
+                            $this->reject($connection, Protocol::ERROR_EXPECTED_HELLO);
+                            $finish();
+
+                            return;
+                        }
+
+                        $tokenHash = $this->stringField($message, 'token_hash');
+
+                        if ($tokenHash === '' || ! hash_equals($this->tokenHash, $tokenHash)) {
+                            $this->reject($connection, Protocol::ERROR_TOKEN_MISMATCH);
+                            $finish();
+                            call_user_func($this->onInvalidTokenHash);
 
                             return;
                         }
 
                         if (! $this->protocolIsValid($message)) {
-                            $this->reject($connection, 'unsupported_protocol');
-                            $closedByUs = true;
+                            $this->reject($connection, Protocol::ERROR_UNSUPPORTED_PROTOCOL);
+                            $finish();
                             $server->close();
                             call_user_func($this->onInvalidPayloadVersion);
-
-                            return;
-                        }
-
-                        if (($message['token_hash'] ?? '') !== $this->tokenHash) {
-                            $this->reject($connection, 'token_mismatch');
-                            $closedByUs = true;
-                            call_user_func($this->onInvalidTokenHash);
 
                             return;
                         }
@@ -95,59 +132,69 @@ class Server
                     }
 
                     if ($type !== Protocol::TYPE_PING && $type !== Protocol::TYPE_TELEMETRY_BATCH) {
-                        $this->reject($connection, 'unexpected_type');
-                        $closedByUs = true;
+                        $this->reject($connection, Protocol::ERROR_UNEXPECTED_TYPE);
+                        $finish();
 
                         return;
                     }
 
-                    if ($this->stringField($message, 'session_id') !== $sessionId) {
-                        $this->reject($connection, 'session_mismatch');
-                        $closedByUs = true;
+                    if (! hash_equals($sessionId, $this->stringField($message, 'session_id'))) {
+                        $this->reject($connection, Protocol::ERROR_SESSION_MISMATCH);
+                        $finish();
 
                         return;
                     }
 
                     if ($this->intField($message, 'sequence') !== $expectedSequence) {
-                        $this->reject($connection, 'sequence_mismatch');
-                        $closedByUs = true;
+                        $this->reject($connection, Protocol::ERROR_SEQUENCE_MISMATCH);
+                        $finish();
 
                         return;
                     }
 
                     if ($type === Protocol::TYPE_PING) {
                         $this->ack($connection, $expectedSequence, 0);
-                        $closedByUs = true;
+                        $finish();
 
                         return;
                     }
 
                     if ($this->intField($message, 'batch_version') !== Protocol::BATCH_VERSION) {
-                        $this->reject($connection, 'unsupported_batch_version');
-                        $closedByUs = true;
+                        $this->reject($connection, Protocol::ERROR_UNSUPPORTED_BATCH_VERSION);
+                        $finish();
 
                         return;
                     }
 
-                    $records = $message['records'] ?? [];
+                    $records = $message['records'] ?? null;
 
-                    if (! is_array($records) || count($records) > Protocol::MAX_BATCH) {
-                        $this->reject($connection, 'batch_too_large');
-                        $closedByUs = true;
+                    if (! is_array($records) || ! array_is_list($records)) {
+                        $this->reject($connection, Protocol::ERROR_INVALID_RECORDS);
+                        $finish();
 
                         return;
                     }
 
-                    $recordsJson = json_encode($records, flags: JSON_THROW_ON_ERROR);
+                    if (count($records) > Protocol::MAX_BATCH) {
+                        $this->reject($connection, Protocol::ERROR_BATCH_TOO_LARGE);
+                        $finish();
+
+                        return;
+                    }
+
+                    $recordsJson = $records === [] ? null : json_encode($records, flags: JSON_THROW_ON_ERROR);
                     $this->ack($connection, $expectedSequence, count($records));
-                    $closedByUs = true;
+                    $finish();
 
                     return;
                 }
             });
 
-            $connection->on('close', function () use ($frames, &$recordsJson, &$closedByUs): void {
-                if (! $closedByUs && ! $frames->isEmpty()) {
+            $connection->on('close', function () use ($frames, &$recordsJson, &$finished, $finish): void {
+                $completed = $finished;
+                $finish();
+
+                if (! $completed && ! $frames->isEmpty()) {
                     call_user_func($this->onConnectionError, "Incomplete payload received. Buffer: [{$frames->leftover()}]");
 
                     return;
@@ -164,10 +211,31 @@ class Server
         });
 
         $server->on('error', function (Throwable $e): void {
-            call_user_func($this->onServerError, $e);
+            call_user_func($this->onServerError, $e->getMessage());
         });
 
         call_user_func($this->onServerStarted);
+    }
+
+    /**
+     * Close connections that never complete their exchange, so a stuck or slow client
+     * cannot hold sockets open forever.
+     */
+    private function startIdleTimer(ConnectionInterface $connection, bool &$finished): ?TimerInterface
+    {
+        if ($this->loop === null || $this->idleTimeout <= 0) {
+            return null;
+        }
+
+        return $this->loop->addTimer($this->idleTimeout, function () use ($connection, &$finished): void {
+            if ($finished) {
+                return;
+            }
+
+            $finished = true;
+            $this->reject($connection, Protocol::ERROR_IDLE_TIMEOUT);
+            call_user_func($this->onConnectionError, "Connection idle for {$this->idleTimeout}s; closed.");
+        });
     }
 
     /**

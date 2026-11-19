@@ -1,6 +1,6 @@
 # Watchtower agent ↔ sidecar protocol
 
-**Package:** 1.0.0  
+**Package:** 1.1.0  
 **Protocol name:** `watchtower`  
 **Protocol version:** `1`  
 **Batch version:** `1`  
@@ -38,7 +38,13 @@ Example (illustrative):
 
 (Actual length must match the JSON bytes.)
 
-Incomplete buffers are held in `FrameBuffer` until a full frame arrives. Truncated connections without a clean close are reported as connection errors.
+Validation (`Frame::tryDecodeOne`, same in both copies):
+
+- The length prefix must be 1–9 decimal digits. Anything else (letters, a sign, a missing newline after 9 bytes) is invalid.
+- The body must be 2 bytes to **16 MiB** (`Protocol::MAX_FRAME_BYTES`) and decode to a JSON **object**.
+- "Not enough bytes yet" and "can never be valid" are different outcomes. Incomplete frames wait in `FrameBuffer`; invalid ones are rejected at once with `invalid_frame`, so neither side waits for a timeout on garbage.
+
+Truncated connections without a clean close are reported as connection errors.
 
 ## Connection model
 
@@ -50,7 +56,9 @@ Each TCP connection is **one-shot**:
 4. Client sends **one** `telemetry_batch` **or** **one** `ping`.
 5. Sidecar replies **ACK** (or **ERROR**) and **closes**.
 
-`sequence` is therefore always `1` for a successful command on that socket. A second command on the same connection is not part of v1. Reconnect and HELLO again for the next flush or ping.
+`sequence` is therefore always `1` for a successful command on that socket. A second command on the same connection is not part of v1. Reconnect and HELLO again for the next flush or ping. Anything the client sends after the sidecar's ACK or ERROR is ignored.
+
+**Idle timeout:** the sidecar closes a connection that has not finished its exchange within **10 seconds** (`Protocol::IDLE_TIMEOUT_SECONDS`) with `idle_timeout`, so a stuck client cannot hold sockets open. Local SDK writes complete in milliseconds.
 
 The Laravel `Ingest` client always starts `sequence` at `1` after WELCOME (`src/Ingest.php`).
 
@@ -68,13 +76,16 @@ Client → sidecar.
 | `sdk` | string | no | `"laravel"` |
 | `php_version` | string | no | `PHP_VERSION` |
 
-Sidecar rejects before WELCOME when:
+Sidecar checks, **in this order**, and rejects before WELCOME when:
 
 | Condition | Error `code` | Extra |
 | --- | --- | --- |
+| Bytes are not a valid frame | `invalid_frame` | Logged as a connection error |
 | First frame is not HELLO | `expected_hello` | |
-| `protocol` ≠ `watchtower` or `protocol_version` ≠ `1` | `unsupported_protocol` | Sidecar listen loop stops (`onInvalidPayloadVersion`) |
-| `token_hash` ≠ sidecar hash | `token_mismatch` | `onInvalidTokenHash` callback |
+| `token_hash` missing or ≠ sidecar hash (constant-time `hash_equals`) | `token_mismatch` | `onInvalidTokenHash` callback |
+| `protocol` ≠ `watchtower` or `protocol_version` ≠ `1` | `unsupported_protocol` | Sidecar stops (`onInvalidPayloadVersion`) |
+
+The token is checked **before** the protocol so only a client that knows the token can make the sidecar stop. A version mismatch from an authenticated client means the app and sidecar were deployed with different package versions; the sidecar flushes and exits so the process manager restarts it with the new version.
 
 `token_hash` is **not** HMAC. Anyone who can reach the listen port and present the same short hash is accepted. Bind ingest to localhost in production.
 
@@ -135,9 +146,11 @@ Client → sidecar.
 
 **Batch version:** `batch_version` must be `1` or the sidecar returns `unsupported_batch_version`. Bump this when the **batch envelope** changes, not when a single record field is added.
 
-**Max batch:** `count(records)` must be `≤ 500`. Otherwise `batch_too_large`. Empty arrays are allowed by the count check (`0 ≤ 500`); the SDK usually does not send empty flushes.
+**Records:** `records` must be a JSON **list**; an object or any other type is `invalid_records`.
 
-The SDK also refuses to send if `count(records) > max_batch` from WELCOME (`RuntimeException`).
+**Max batch:** `count(records)` must be `≤ 500`. Otherwise `batch_too_large`. An empty list is acknowledged and not forwarded.
+
+The SDK splits a larger buffer itself: it sends at most the `max_batch` from WELCOME per connection and opens new sessions for the rest, so a full buffer is never dropped.
 
 Record objects are the existing Nightwatch-shaped payloads (`t`, `timestamp`, …). The sidecar JSON-encodes the `records` array and forwards it to cloud ingest. It does not validate individual DTOs in 1.0.0.
 
@@ -152,7 +165,7 @@ Sidecar → client, then close.
 | `accepted` | int | Record count for a batch; `0` for PING |
 | `rejected` | int | `0` on success |
 
-The SDK requires `type=ack`, matching `sequence`, and `rejected === 0`.
+The SDK requires `type=ack`, matching `sequence`, and `rejected === 0`. Any failure while sending is reported through `Watchtower::unrecoverableExceptionOccurred()` and never thrown into the application.
 
 ## ERROR
 
@@ -175,7 +188,12 @@ Sidecar → client, then close.
 | `session_mismatch` | `session_id` ≠ issued session |
 | `sequence_mismatch` | `sequence` ≠ expected (`1`) |
 | `unsupported_batch_version` | `batch_version` ≠ `1` |
-| `batch_too_large` | More than 500 records, or `records` not an array |
+| `invalid_records` | `records` missing or not a JSON list |
+| `batch_too_large` | More than 500 records |
+| `invalid_frame` | Bad length prefix, frame over 16 MiB, or body not a JSON object |
+| `idle_timeout` | Exchange not finished within 10 s |
+
+The SDK surfaces the code, e.g. `The Watchtower agent rejected the connection [token_mismatch]`.
 
 ## Nightwatch wire (what we replaced)
 
@@ -189,7 +207,7 @@ After the sidecar accepts a batch it still authenticates to **your** Watchtower 
 - Bearer token = `WATCHTOWER_TOKEN`
 - Response must include `token`, `expires_in` (int), `refresh_in` (int), `ingest_url` (string)
 
-Retries use a backoff schedule in `IngestDetailsRepository`. GitHub Actions does **not** call a real platform: tests fake HTTP or skip live auth when `WATCHTOWER_BASE_URL` contains `watchtower.test`.
+Retries use a backoff schedule in `IngestDetailsRepository`. The ingest token is refreshed when it expires (before the next batch, not only on the `refresh_in` timer), and a `401` from ingest drops the cached token so the next batch authenticates again. GitHub Actions does **not** call a real platform: tests fake HTTP or skip live auth when `WATCHTOWER_BASE_URL` contains `watchtower.test`.
 
 ## HMAC / challenge (not in 1.0.0)
 

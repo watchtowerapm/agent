@@ -601,6 +601,77 @@ class IngestTest extends TestCase
         $this->assertCount(1, $exceptions);
         $this->assertSame('Whoops!', $exceptions[0]->getMessage());
     }
+
+    public function test_it_splits_buffers_larger_than_the_announced_max_batch(): void
+    {
+        StreamWrapper::intercept('stream_open', function (string $path, string $mode, int $options, ?string &$openedPath): bool {
+            StreamWrapper::$readBuffer = Frame::encode([
+                'type' => Protocol::TYPE_WELCOME,
+                'accepted' => true,
+                'protocol_version' => Protocol::VERSION,
+                'session_id' => 'sess_test',
+                'max_batch' => 2,
+            ]).Frame::encode([
+                'type' => Protocol::TYPE_ACK,
+                'sequence' => 1,
+                'accepted' => 2,
+                'rejected' => 0,
+            ]);
+            StreamWrapper::$readOffset = 0;
+
+            return true;
+        });
+        $exceptions = collect();
+        Watchtower::handleUnrecoverableExceptionsUsing($exceptions->push(...));
+        $this->core->ingest->shouldDigestWhenBufferIsFull(false);
+
+        for ($i = 0; $i < 5; $i++) {
+            $this->core->ingest->write(FakeRecord::make());
+        }
+        $this->core->ingest->digest();
+
+        $this->assertCount(0, $exceptions, $exceptions->map->getMessage()->implode(', '));
+        $this->assertCount(3, StreamWrapper::type('stream_open'));
+        $batchSizes = collect(Frame::decodeAll(StreamWrapper::type('stream_write')->map(fn ($event) => $event['args'][0])->implode('')))
+            ->where('type', Protocol::TYPE_TELEMETRY_BATCH)
+            ->map(fn ($message) => count($message['records']))
+            ->values()
+            ->all();
+        $this->assertSame([2, 2, 1], $batchSizes);
+    }
+
+    public function test_transmission_failures_in_write_now_never_reach_the_application(): void
+    {
+        StreamWrapper::intercept('stream_write', fn () => throw new RuntimeException('Sidecar is gone'));
+        $exceptions = collect();
+        Watchtower::handleUnrecoverableExceptionsUsing($exceptions->push(...));
+
+        $this->core->ingest->writeNow(FakeRecord::make());
+
+        $this->assertCount(1, $exceptions);
+        $this->assertSame('Sidecar is gone', $exceptions[0]->getMessage());
+    }
+
+    public function test_it_reports_the_error_code_when_the_sidecar_rejects_the_connection(): void
+    {
+        StreamWrapper::intercept('stream_open', function (string $path, string $mode, int $options, ?string &$openedPath): bool {
+            StreamWrapper::$readBuffer = Frame::encode([
+                'type' => Protocol::TYPE_ERROR,
+                'accepted' => false,
+                'code' => Protocol::ERROR_TOKEN_MISMATCH,
+            ]);
+            StreamWrapper::$readOffset = 0;
+
+            return true;
+        });
+        $exceptions = collect();
+        Watchtower::handleUnrecoverableExceptionsUsing($exceptions->push(...));
+
+        $this->core->ingest->writeNow(FakeRecord::make());
+
+        $this->assertCount(1, $exceptions);
+        $this->assertSame('The Watchtower agent rejected the connection [token_mismatch]', $exceptions[0]->getMessage());
+    }
 }
 
 class StreamWrapper

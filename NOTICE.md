@@ -4,10 +4,10 @@ Watchtower Agent contains code derived from Laravel Nightwatch:
 
 https://github.com/laravel/nightwatch
 
-**Upstream version:** `laravel/nightwatch` v1.30.0 (MIT License).  
+**Upstream version:** `laravel/nightwatch` v1.30.0 (MIT License), with the applicable fixes from v1.30.1 – v1.30.6 ported (see `CHANGELOG.md`).  
 Copyright (c) Taylor Otwell — see [LICENSE.md](LICENSE.md).
 
-Watchtower package version is **1.0.0**. That is independent of Nightwatch’s 1.30.0 tag and of the on-the-wire `protocol_version` (`1`).
+Watchtower package version is **1.1.0**. That is independent of Nightwatch’s 1.30.0 tag and of the on-the-wire `protocol_version` (`1`).
 
 ## What was forked
 
@@ -24,7 +24,7 @@ From **1.0.0**, the agent ↔ sidecar session is a Watchtower protocol, not Nigh
 
 | Layer | Versioning |
 | --- | --- |
-| Package | `1.0.0` (`version.txt`, `composer.json`) |
+| Package | `1.1.0` (`version.txt`, `composer.json`) |
 | Protocol | `protocol` = `watchtower`, `protocol_version` = `1` (HELLO / WELCOME) |
 | Batch | `batch_version` = `1` (`telemetry_batch`) |
 | Events | Existing record shapes (`t`, fields) until a Watchtower event model lands |

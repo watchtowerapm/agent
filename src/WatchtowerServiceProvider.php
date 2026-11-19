@@ -94,6 +94,7 @@ use function class_exists;
 use function defined;
 use function dirname;
 use function file_get_contents;
+use function gethostname;
 use function hash;
 use function microtime;
 use function rtrim;
@@ -242,7 +243,7 @@ final class WatchtowerServiceProvider extends ServiceProvider
     {
         $this->app->singleton(AgentCommand::class, fn () => new AgentCommand(
             token: $this->watchtowerConfig['token'] ?? null,
-            server: $this->watchtowerConfig['server'] ?? null,
+            server: $this->watchtowerConfig['server'] ?? (string) gethostname(),
             ingestUri: $this->watchtowerConfig['ingest']['uri'] ?? null,
         ));
     }
@@ -286,8 +287,8 @@ final class WatchtowerServiceProvider extends ServiceProvider
                 ),
                 captureExceptionSourceCode: (bool) ($this->watchtowerConfig['capture_exception_source_code'] ?? true),
                 captureRequestPayload: (bool) ($this->watchtowerConfig['capture_request_payload'] ?? false),
-                redactPayloadFields: $this->watchtowerConfig['redact_payload_fields'] ?? ['_token', 'password', 'password_confirmation'],
-                redactHeaders: $this->watchtowerConfig['redact_headers'] ?? ['Authorization', 'Cookie', 'Proxy-Authorization', 'X-XSRF-TOKEN'],
+                redactPayloadFields: $this->watchtowerConfig['redact_payload_fields'] ?? ['_token', 'password', 'password_confirmation', 'current_password'],
+                redactHeaders: $this->watchtowerConfig['redact_headers'] ?? ['Authorization', 'Cookie', 'Proxy-Authorization', 'X-CSRF-TOKEN', 'X-XSRF-TOKEN'],
                 container: $this->app,
             ),
             executionState: $executionState,
@@ -555,7 +556,7 @@ final class WatchtowerServiceProvider extends ServiceProvider
                 id: $trace,
                 currentExecutionStageStartedAtMicrotime: $this->timestamp,
                 deploy: $this->watchtowerConfig['deployment'] ?? '',
-                server: $this->watchtowerConfig['server'] ?? '',
+                server: $this->watchtowerConfig['server'] ?? (string) gethostname(),
                 user: $this->userProvider(),
             );
         } else {
@@ -573,7 +574,7 @@ final class WatchtowerServiceProvider extends ServiceProvider
                 id: $trace,
                 currentExecutionStageStartedAtMicrotime: $this->timestamp,
                 deploy: $this->watchtowerConfig['deployment'] ?? '',
-                server: $this->watchtowerConfig['server'] ?? '',
+                server: $this->watchtowerConfig['server'] ?? (string) gethostname(),
                 user: $this->userProvider(),
             );
         }

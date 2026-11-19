@@ -1,6 +1,8 @@
 FROM php:8.4-alpine
 
-RUN apk add --no-cache linux-headers $PHPIZE_DEPS \
+# Upgrade OS packages first so base-image CVEs (e.g. CVE-2026-111497 in brotli-libs) are patched.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache linux-headers $PHPIZE_DEPS \
     && docker-php-ext-install pcntl sockets \
     && apk del linux-headers $PHPIZE_DEPS
 

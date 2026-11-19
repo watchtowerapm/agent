@@ -14,7 +14,11 @@ use Tests\Timer;
 
 use function array_fill;
 use function gethostname;
+use function glob;
+use function rmdir;
 use function str_repeat;
+use function sys_get_temp_dir;
+use function uniqid;
 
 class IngestTest extends TestCase
 {
@@ -51,7 +55,7 @@ class IngestTest extends TestCase
             'accept' => 'application/json',
             'content-encoding' => 'gzip',
             'content-type' => 'application/json',
-            'nightwatch-server' => gethostname(),
+            'watchtower-server' => gethostname(),
             'user-agent' => 'WatchtowerAgent/'.self::packageVersion(),
         ], $ingestBrowser->headers);
         $ingestBrowser->assertSent([
@@ -69,6 +73,41 @@ class IngestTest extends TestCase
             Request::json('/api/agent-auth'),
         ]);
         $ingestDetailsBrowser->assertPending([]);
+    }
+
+    public function test_it_sends_exceptions_without_waiting_for_the_batch_window(): void
+    {
+        $loop = new LoopFake(runForSeconds: 1);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([
+            Response::jwt(),
+        ]);
+        $ingestBrowser = new BrowserFake([
+            Response::ingested(),
+        ]);
+        $records = [['t' => 'request'], ['t' => 'exception', 'message' => 'Boom']];
+        $loop->addTimer(0, $server->pendingConnection($records));
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $this->assertLogMatches(<<<'OUTPUT'
+        {date} {info} Authentication successful {duration}
+        {date} {info} Ingest successful {duration}
+        OUTPUT, $output);
+        $ingestBrowser->assertSent([
+            Request::ingest($records),
+        ]);
+        // No 10 second batching timer was scheduled by Ingest::write.
+        $loop->assertRun([
+            new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
+        ]);
     }
 
     public function test_it_handles_unsuccessful_responses(): void
@@ -1233,14 +1272,16 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
     }
 
-    public function test_it_does_not_ingest_if_token_has_expired(): void
+    public function test_it_refreshes_an_expired_token_before_ingesting(): void
     {
         $loop = new LoopFake(runForSeconds: 12);
         $server = new TcpServerFake;
         $ingestDetailsBrowser = new BrowserFake([
             Response::jwt(expiresIn: 10),
+            Response::jwt(token: 'WATCHTOWER_TEST_TOKEN_2'),
         ]);
         $ingestBrowser = new BrowserFake([
+            Response::ingested(),
             Response::ingested(),
         ]);
         $loop->addTimer(10, $server->pendingConnection([['t' => 'request']]));
@@ -1259,10 +1300,12 @@ class IngestTest extends TestCase
         $this->assertLogMatches(<<<'OUTPUT'
             {date} {info} Authentication successful {duration}
             {date} {info} Ingest successful {duration}
-            {date} {error} Ingest failed {duration}: Authentication token expired
+            {date} {info} Authentication successful {duration}
+            {date} {info} Ingest successful {duration}
             OUTPUT, $output);
         $ingestBrowser->assertSent([
-            Request::ingest([['t' => 'request']]),
+            Request::ingest([['t' => 'request']], headers: ['authorization' => 'Bearer WATCHTOWER_TEST_TOKEN']),
+            Request::ingest([['t' => 'request']], headers: ['authorization' => 'Bearer WATCHTOWER_TEST_TOKEN_2']),
         ]);
         $ingestBrowser->assertProcessing([]);
         $ingestBrowser->assertPending([]);
@@ -1271,13 +1314,55 @@ class IngestTest extends TestCase
             new Timer(interval: 11, runAt: 11, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertPending([
-            new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
+            new Timer(interval: 3_600, runAt: 3_611, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
         ]);
-        $loop->assertCanceled([]);
+        $loop->assertCanceled([
+            new Timer(interval: 3_600, canceledAt: 11, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
+        ]);
         $ingestDetailsBrowser->assertSent([
+            Request::json('/api/agent-auth'),
             Request::json('/api/agent-auth'),
         ]);
         $ingestDetailsBrowser->assertPending([]);
         $ingestDetailsBrowser->assertProcessing([]);
+    }
+
+    public function test_it_keeps_payloads_it_could_not_send_and_sends_them_later(): void
+    {
+        $spoolPath = sys_get_temp_dir().'/watchtower-spool-feature-'.uniqid();
+        $loop = new LoopFake(runForSeconds: 16);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([
+            Response::jwt(),
+        ]);
+        $ingestBrowser = new BrowserFake([
+            Response::internalServerError('Down for maintenance'),
+            Response::ingested(),
+        ]);
+        $loop->addTimer(0, $server->pendingConnection([['t' => 'request']]));
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+            spoolPath: $spoolPath,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $this->assertLogMatches(<<<'OUTPUT'
+        {date} {info} Authentication successful {duration}
+        {date} {error} Ingest failed {duration}: 500 \[Down for maintenance\]; kept to send later \[1 waiting\]
+        {date} {info} Ingest successful {duration}
+        OUTPUT, $output);
+        // The same payload went out twice: first attempt, then the retry from the spool.
+        $ingestBrowser->assertSent([
+            Request::ingest([['t' => 'request']]),
+            Request::ingest([['t' => 'request']]),
+        ]);
+        $ingestBrowser->assertPending([]);
+        $this->assertSame([], glob("{$spoolPath}/*.gz") ?: []);
+        @rmdir($spoolPath);
     }
 }
