@@ -188,13 +188,7 @@ class Ingest
                 throw new RuntimeException('Authentication token expired');
             }
 
-            return $this->browser->post(
-                url: $ingestDetails->ingestUrl,
-                headers: [
-                    'authorization' => "Bearer {$ingestDetails->token}",
-                ],
-                body: $payload,
-            );
+            return $this->send($ingestDetails, $payload);
         })->then(function (ResponseInterface $response) use (&$start): null {
             $duration = microtime(true) - $start;
 
@@ -219,6 +213,10 @@ class Ingest
 
             if (! $stop && $e instanceof ResponseException && $e->getResponse()->getStatusCode() === 401) {
                 $this->ingestDetails->invalidate();
+            }
+
+            if ($e instanceof IngestUnreachableException) {
+                $this->ingestDetails->invalidateUnreachable();
             }
 
             if ($stop) {
@@ -297,13 +295,7 @@ class Ingest
                 throw new RuntimeException('Authentication token expired');
             }
 
-            return $this->browser->post(
-                url: $ingestDetails->ingestUrl,
-                headers: [
-                    'authorization' => "Bearer {$ingestDetails->token}",
-                ],
-                body: $payload,
-            );
+            return $this->send($ingestDetails, $payload);
         })->then(function (ResponseInterface $response) use ($path, &$start): null {
             [$message, $stop, $refreshIn] = $this->parseResponse($response);
             $this->draining = false;
@@ -329,6 +321,10 @@ class Ingest
                 $this->ingestDetails->invalidate();
             }
 
+            if ($e instanceof IngestUnreachableException) {
+                $this->ingestDetails->invalidateUnreachable();
+            }
+
             if (! $stop && ! self::isRetryable($e)) {
                 // Watchtower rejected this payload itself; resending can't succeed.
                 $this->spool?->remove($path);
@@ -350,6 +346,25 @@ class Ingest
      * Whether a failed upload may succeed later: the network or Watchtower was unavailable,
      * busy or asked to retry, or the session needs renewing. A rejected payload is not.
      */
+    /**
+     * POST a payload to ingest. A failure before Watchtower answers becomes an
+     * IngestUnreachableException, so callers can tell it from an HTTP error response.
+     *
+     * @return PromiseInterface<ResponseInterface>
+     */
+    private function send(IngestDetails $ingestDetails, string $payload): PromiseInterface
+    {
+        return $this->browser->post(
+            url: $ingestDetails->ingestUrl,
+            headers: [
+                'authorization' => "Bearer {$ingestDetails->token}",
+            ],
+            body: $payload,
+        )->catch(static function (Throwable $e): never {
+            throw $e instanceof ResponseException ? $e : new IngestUnreachableException($e->getMessage(), previous: $e);
+        });
+    }
+
     private static function isRetryable(Throwable $e): bool
     {
         if (! $e instanceof ResponseException) {

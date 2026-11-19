@@ -1,12 +1,12 @@
 # watchtowerapm/agent
 
-Watchtower Laravel agent **1.1.0** — open-source APM instrumentation for Laravel that sends telemetry only to **your** Watchtower instance.
+Watchtower Laravel agent **1.1.1** — open-source APM instrumentation for Laravel that sends telemetry only to **your** Watchtower instance.
 
 This project is derived from [`laravel/nightwatch`](https://github.com/laravel/nightwatch) v1.30.0 (MIT). It does **not** connect to Laravel’s hosted Nightwatch service. Composer authors are Watchtower; Nightwatch attribution lives in [LICENSE.md](LICENSE.md) and [NOTICE.md](NOTICE.md).
 
 | | |
 | --- | --- |
-| Package version | **1.1.0** (`version.txt`) |
+| Package version | **1.1.1** (`version.txt`) |
 | Git branch | `1.x` |
 | Wire protocol | `watchtower` / `protocol_version` **1** |
 | PHP | 8.2–8.5 |

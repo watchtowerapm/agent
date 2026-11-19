@@ -1365,4 +1365,89 @@ class IngestTest extends TestCase
         $this->assertSame([], glob("{$spoolPath}/*.gz") ?: []);
         @rmdir($spoolPath);
     }
+
+    public function test_it_authenticates_again_when_ingest_is_unreachable(): void
+    {
+        $loop = new LoopFake(runForSeconds: 31);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([
+            Response::jwt(ingestUrl: 'http://ingest.internal:3000'),
+            Response::jwt(),
+        ]);
+        $ingestBrowser = new BrowserFake([
+            Response::throwWhileProcessing('Connection refused'),
+            Response::ingested(),
+        ]);
+        $loop->addTimer(0, $server->pendingConnection([['t' => 'request']]));
+        $loop->addTimer(20, $server->pendingConnection([['t' => 'request']]));
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $this->assertLogMatches(<<<'OUTPUT'
+        {date} {info} Authentication successful {duration}
+        {date} {error} Ingest failed {duration}: Connection refused
+        {date} {info} Authentication successful {duration}
+        {date} {info} Ingest successful {duration}
+        OUTPUT, $output);
+        // The second batch goes to the ingest URL from the fresh authentication.
+        $ingestBrowser->assertSent([
+            Request::ingest([['t' => 'request']], url: 'http://ingest.internal:3000'),
+            Request::ingest([['t' => 'request']]),
+        ]);
+        $ingestBrowser->assertPending([]);
+        $ingestDetailsBrowser->assertSent([
+            Request::json('/api/agent-auth'),
+            Request::json('/api/agent-auth'),
+        ]);
+        $ingestDetailsBrowser->assertPending([]);
+    }
+
+    public function test_it_authenticates_again_at_most_once_a_minute_while_ingest_is_unreachable(): void
+    {
+        $loop = new LoopFake(runForSeconds: 51);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([
+            Response::jwt(),
+            Response::jwt(),
+        ]);
+        $ingestBrowser = new BrowserFake([
+            Response::throwWhileProcessing('Connection refused'),
+            Response::throwWhileProcessing('Connection refused'),
+            Response::throwWhileProcessing('Connection refused'),
+        ]);
+        $loop->addTimer(0, $server->pendingConnection([['t' => 'request']]));
+        $loop->addTimer(20, $server->pendingConnection([['t' => 'request']]));
+        $loop->addTimer(40, $server->pendingConnection([['t' => 'request']]));
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $this->assertLogMatches(<<<'OUTPUT'
+        {date} {info} Authentication successful {duration}
+        {date} {error} Ingest failed {duration}: Connection refused
+        {date} {info} Authentication successful {duration}
+        {date} {error} Ingest failed {duration}: Connection refused
+        {date} {error} Ingest failed {duration}: Connection refused
+        OUTPUT, $output);
+        // One re-authentication after the first failure; the third batch reuses it.
+        $ingestDetailsBrowser->assertSent([
+            Request::json('/api/agent-auth'),
+            Request::json('/api/agent-auth'),
+        ]);
+        $ingestDetailsBrowser->assertPending([]);
+        $ingestBrowser->assertPending([]);
+    }
 }

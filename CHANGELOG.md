@@ -1,7 +1,8 @@
 # Release Notes
 
-## Unreleased
+## 1.1.1 - 2026-11-19
 
+- Sidecar: when ingest cannot be reached (DNS, connection, TLS or timeout), it authenticates again on the next attempt, at most once a minute, instead of reusing the cached ingest URL and token until the hourly refresh. A corrected ingest URL now reaches running agents within about a minute.
 - Sidecar: `react/http` 1.12.0. Its dependencies are now resolved for PHP 8.2 (`config.platform`), so updates can no longer pull in packages that need a newer PHP than the agent supports.
 
 ## 1.1.0 - 2026-11-19

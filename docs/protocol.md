@@ -1,6 +1,6 @@
 # Watchtower agent ↔ sidecar protocol
 
-**Package:** 1.1.0  
+**Package:** 1.1.1  
 **Protocol name:** `watchtower`  
 **Protocol version:** `1`  
 **Batch version:** `1`  

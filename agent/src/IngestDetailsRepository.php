@@ -40,6 +40,13 @@ class IngestDetailsRepository
     private ?TimerInterface $refreshTimer = null;
 
     /**
+     * Shortest gap between re-authentications caused by ingest being unreachable.
+     */
+    private const UNREACHABLE_REAUTHENTICATE_AFTER_SECONDS = 60;
+
+    private ?int $unreachableInvalidatedAt = null;
+
+    /**
      * @var list<int|float>|null
      */
     private ?array $quickRetryStrategyDurationsCache = null;
@@ -94,6 +101,24 @@ class IngestDetailsRepository
         }
 
         $this->ingestDetails = null;
+    }
+
+    /**
+     * Forget the cached ingest details after ingest could not be reached, so a changed ingest
+     * URL is picked up on the next attempt instead of at the next scheduled refresh. At most
+     * once a minute: during an ingest outage this costs one authentication per minute.
+     */
+    public function invalidateUnreachable(): void
+    {
+        $now = $this->clock->time();
+
+        if ($this->unreachableInvalidatedAt !== null && $now - $this->unreachableInvalidatedAt < self::UNREACHABLE_REAUTHENTICATE_AFTER_SECONDS) {
+            return;
+        }
+
+        $this->unreachableInvalidatedAt = $now;
+
+        $this->invalidate();
     }
 
     public function markOverQuota(int|float|null $refreshIn = null): void
