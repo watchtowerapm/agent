@@ -20,6 +20,7 @@ require_once __DIR__.'/SyncedClock.php';
 require_once __DIR__.'/BrowserFake.php';
 require_once __DIR__.'/Response.php';
 require_once __DIR__.'/PendingConnection.php';
+require_once __DIR__.'/IdleConnection.php';
 require_once __DIR__.'/TcpServerFake.php';
 require_once __DIR__.'/TcpServerFake.php';
 
@@ -38,7 +39,7 @@ if (! is_array($payload)) {
     exit(1);
 }
 
-/** @var array{listenOn: string, viaPhar: bool, ingestDetailsBrowser: BrowserFake|null, ingestBrowser: BrowserFake|null, loop: LoopFake|null, server: TcpServerFake|null, silent: bool|null, quiet: bool|null, verbose: bool|null, maxBufferLength: int|null }  $payload */
+/** @var array{listenOn: string, viaPhar: bool, ingestDetailsBrowser: BrowserFake|null, ingestBrowser: BrowserFake|null, loop: LoopFake|null, server: TcpServerFake|null, silent: bool|null, quiet: bool|null, verbose: bool|null, maxBufferLength: int|null, connectionIdleTimeout?: float, spoolPath?: string }  $payload */
 [
     'listenOn' => $listenOn,
     'viaPhar' => $viaPhar,
@@ -51,6 +52,12 @@ if (! is_array($payload)) {
     'verbose' => $verbose,
     'maxBufferLength' => $maxBufferLength,
 ] = $payload;
+
+// Idle-timeout timers would show up in every timer assertion; tests opt in explicitly.
+$connectionIdleTimeout = (float) ($payload['connectionIdleTimeout'] ?? 0.0);
+
+// The spool would add timers and keep payloads between tests; tests opt in with a directory.
+$spoolPath = (string) ($payload['spoolPath'] ?? '');
 
 $browserFactory = null;
 $serverResolver = null;
@@ -115,11 +122,11 @@ if ($viaPhar === false) {
 }
 
 if ($viaPhar) {
-    call_user_func(static function () use ($listenOn, $browserFactory, $serverResolver, $loop, $silent, $quiet, $verbose, $maxBufferLength) {
+    call_user_func(static function () use ($listenOn, $browserFactory, $serverResolver, $loop, $silent, $quiet, $verbose, $maxBufferLength, $connectionIdleTimeout, $spoolPath) {
         require __DIR__.'/../build/agent.phar';
     });
 } else {
-    call_user_func(static function () use ($listenOn, $browserFactory, $serverResolver, $loop, $silent, $quiet, $verbose, $maxBufferLength) {
+    call_user_func(static function () use ($listenOn, $browserFactory, $serverResolver, $loop, $silent, $quiet, $verbose, $maxBufferLength, $connectionIdleTimeout, $spoolPath) {
         $clock = $loop?->clock;
 
         $basePath = __DIR__.'/../build';

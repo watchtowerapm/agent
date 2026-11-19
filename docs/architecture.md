@@ -47,7 +47,7 @@ Nightwatch-compatible job payload keys (for trace correlation) may still appear 
 4. **`IngestDetailsRepository`** POSTs `{}` to `{WATCHTOWER_BASE_URL}/api/agent-auth` with `Authorization: Bearer {token}` and expects JSON: `token`, `expires_in`, `refresh_in`, `ingest_url`.
 5. **`Ingest` (sidecar)** gzip-POSTs accepted record JSON to `ingest_url`.
 
-The sidecar still sends a `nightwatch-server` HTTP header on ingest. Watchtower ingest accepts that key so platform routing can stay stable while the local wire protocol is Watchtower-owned.
+The sidecar sends a `watchtower-server` HTTP header (the host name) on auth and ingest requests. If ingest answers `401`, the sidecar drops its cached ingest token and authenticates again before the next batch.
 
 ## Commands
 

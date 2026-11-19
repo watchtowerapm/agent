@@ -1,6 +1,6 @@
 # Documentation
 
-Watchtower Laravel agent **1.0.0** (`watchtowerapm/agent`). Default branch: `1.x`.
+Watchtower Laravel agent **1.1.0** (`watchtowerapm/agent`). Default branch: `1.x`.
 
 | Document | Contents |
 | --- | --- |

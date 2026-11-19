@@ -55,6 +55,8 @@ abstract class TestCase extends BaseTestCase
         ?bool $verbose = null,
         ?string &$listenOn = null,
         ?int $maxBufferLength = null,
+        float $connectionIdleTimeout = 0.0,
+        string $spoolPath = '',
     ): array {
         $payloadFile = __DIR__.'/test-payload';
         $specifiedListenOn = is_string($listenOn);
@@ -75,6 +77,8 @@ abstract class TestCase extends BaseTestCase
                     'quiet' => $quiet,
                     'verbose' => $verbose,
                     'maxBufferLength' => $maxBufferLength,
+                    'connectionIdleTimeout' => $connectionIdleTimeout,
+                    'spoolPath' => $spoolPath,
                 ]));
 
                 if ($write === false) {

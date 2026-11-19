@@ -4,11 +4,11 @@ return [
     'enabled' => env('WATCHTOWER_ENABLED', true),
     'token' => env('WATCHTOWER_TOKEN'),
     'deployment' => env('WATCHTOWER_DEPLOY', env('LARAVEL_CLOUD_DEPLOY_UUID', env('FORGE_DEPLOY_COMMIT', env('VAPOR_COMMIT_HASH')))),
-    'server' => env('WATCHTOWER_SERVER', (string) gethostname()),
+    'server' => env('WATCHTOWER_SERVER'),
     'capture_exception_source_code' => env('WATCHTOWER_CAPTURE_EXCEPTION_SOURCE_CODE', true),
     'capture_request_payload' => env('WATCHTOWER_CAPTURE_REQUEST_PAYLOAD', false),
-    'redact_payload_fields' => explode(',', env('WATCHTOWER_REDACT_PAYLOAD_FIELDS', '_token,password,password_confirmation')),
-    'redact_headers' => explode(',', env('WATCHTOWER_REDACT_HEADERS', 'Authorization,Cookie,Proxy-Authorization,X-XSRF-TOKEN')),
+    'redact_payload_fields' => explode(',', env('WATCHTOWER_REDACT_PAYLOAD_FIELDS', '_token,password,password_confirmation,current_password')),
+    'redact_headers' => explode(',', env('WATCHTOWER_REDACT_HEADERS', 'Authorization,Cookie,Proxy-Authorization,X-CSRF-TOKEN,X-XSRF-TOKEN')),
 
     'sampling' => [
         'requests' => env('WATCHTOWER_REQUEST_SAMPLE_RATE', 1.0),

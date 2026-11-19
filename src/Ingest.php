@@ -4,12 +4,15 @@ namespace Watchtower\Laravel;
 
 use Deprecated;
 use Illuminate\Contracts\Events\Dispatcher;
-use JsonException;
 use RuntimeException;
+use Throwable;
+use UnexpectedValueException;
 use Watchtower\Laravel\Events\IngestingEvents;
+use Watchtower\Laravel\Facades\Watchtower;
 use Watchtower\Laravel\Transport\Frame;
 use Watchtower\Laravel\Transport\Protocol;
 
+use function array_slice;
 use function call_user_func;
 use function count;
 use function is_int;
@@ -67,11 +70,15 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
             return;
         }
 
-        if (! $this->dispatchIngestingEvents([$record])) {
-            return;
-        }
+        try {
+            if (! $this->dispatchIngestingEvents([$record])) {
+                return;
+            }
 
-        $this->transmitRecords([$record]);
+            $this->transmitRecords([$record]);
+        } catch (Throwable $e) {
+            Watchtower::unrecoverableExceptionOccurred($e);
+        }
     }
 
     public function flush(): void
@@ -110,13 +117,17 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
             return;
         }
 
-        if (! $this->dispatchIngestingEvents($this->buffer->all())) {
-            $this->buffer->flush();
+        try {
+            if (! $this->dispatchIngestingEvents($this->buffer->all())) {
+                $this->buffer->flush();
 
-            return;
+                return;
+            }
+
+            $this->transmitRecords($this->buffer->pull());
+        } catch (Throwable $e) {
+            Watchtower::unrecoverableExceptionOccurred($e);
         }
-
-        $this->transmitRecords($this->buffer->pull());
     }
 
     /**
@@ -138,27 +149,44 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
     }
 
     /**
+     * Send records over as many sessions as needed. Each session carries one batch of at most
+     * the `max_batch` the sidecar announced in WELCOME, so a large buffer is split, not dropped.
+     *
      * @param  list<array<mixed>>  $records
      */
     private function transmitRecords(array $records): void
     {
-        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch) use ($records): void {
-            if (count($records) > $maxBatch) {
-                throw new RuntimeException("Batch exceeds max_batch [{$maxBatch}]");
-            }
+        $offset = 0;
+        $total = count($records);
 
-            fwrite_all($stream, Frame::encode([
-                'type' => Protocol::TYPE_TELEMETRY_BATCH,
-                'protocol' => Protocol::NAME,
-                'protocol_version' => Protocol::VERSION,
-                'batch_version' => Protocol::BATCH_VERSION,
-                'session_id' => $sessionId,
-                'sequence' => $sequence,
-                'records' => $records,
-            ]));
+        while ($offset < $total) {
+            $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch) use ($records, &$offset): void {
+                $batch = array_slice($records, $offset, $maxBatch);
 
-            $this->assertAck($this->readFrame($stream, $carry), $sequence);
-        });
+                $this->transmitBatch($stream, $sessionId, $sequence, $carry, $batch);
+
+                $offset += count($batch);
+            });
+        }
+    }
+
+    /**
+     * @param  resource  $stream
+     * @param  list<array<mixed>>  $records
+     */
+    private function transmitBatch($stream, string $sessionId, int $sequence, string &$carry, array $records): void
+    {
+        fwrite_all($stream, Frame::encode([
+            'type' => Protocol::TYPE_TELEMETRY_BATCH,
+            'protocol' => Protocol::NAME,
+            'protocol_version' => Protocol::VERSION,
+            'batch_version' => Protocol::BATCH_VERSION,
+            'session_id' => $sessionId,
+            'sequence' => $sequence,
+            'records' => $records,
+        ]));
+
+        $this->assertAck($this->readFrame($stream, $carry), $sequence);
     }
 
     /**
@@ -183,6 +211,8 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
 
             $carry = '';
             $welcome = $this->readFrame($stream, $carry);
+
+            $this->throwIfRejected($welcome);
 
             if (($welcome['type'] ?? null) !== Protocol::TYPE_WELCOME || ($welcome['accepted'] ?? false) !== true) {
                 throw new RuntimeException('Unexpected response from agent ['.json_encode($welcome).']');
@@ -209,6 +239,8 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
      */
     private function assertAck(array $ack, int $sequence): void
     {
+        $this->throwIfRejected($ack);
+
         if (
             ($ack['type'] ?? null) !== Protocol::TYPE_ACK
             || ($ack['sequence'] ?? null) !== $sequence
@@ -216,6 +248,21 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
         ) {
             throw new RuntimeException('Unexpected response from agent ['.json_encode($ack).']');
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $message
+     */
+    private function throwIfRejected(array $message): void
+    {
+        if (($message['type'] ?? null) !== Protocol::TYPE_ERROR) {
+            return;
+        }
+
+        $code = $message['code'] ?? 'unknown';
+        $code = is_string($code) ? $code : 'unknown';
+
+        throw new RuntimeException("The Watchtower agent rejected the connection [{$code}]");
     }
 
     /**
@@ -227,12 +274,16 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
         for ($i = 0; $i < 8192; $i++) {
             if ($carry !== '') {
                 try {
-                    [$message, $end] = Frame::decodeOne($carry, 0);
+                    $decoded = Frame::tryDecodeOne($carry);
+                } catch (UnexpectedValueException $e) {
+                    throw new RuntimeException("Unexpected response from agent [{$carry}]", previous: $e);
+                }
+
+                if ($decoded !== null) {
+                    [$message, $end] = $decoded;
                     $carry = substr($carry, $end);
 
                     return $message;
-                } catch (RuntimeException|JsonException) {
-                    // Need more bytes.
                 }
             }
 
