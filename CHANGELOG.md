@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- Sidecar: `react/http` 1.12.0. Its dependencies are now resolved for PHP 8.2 (`config.platform`), so updates can no longer pull in packages that need a newer PHP than the agent supports.
+
 ## 1.1.0 - 2026-11-19
 
 Brings in the fixes from upstream `laravel/nightwatch` v1.30.1 – v1.30.6 that apply to Watchtower, and hardens the agent ↔ sidecar protocol. `protocol_version` stays `1`; every change is backward compatible with 1.0.0 clients.
