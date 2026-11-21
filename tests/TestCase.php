@@ -68,6 +68,10 @@ abstract class TestCase extends OrchestraTestCase
 
         $this->core = $this->app->make(Core::class);
         $this->core->flush();
+
+        if ($this->core->ingest instanceof Ingest) {
+            $this->core->ingest->nonceFactory = fn () => SidecarReply::CLIENT_NONCE;
+        }
         $this->core->clock->microtimeResolver = fn () => (float) now()->format('U.u');
     }
 

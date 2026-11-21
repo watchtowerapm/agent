@@ -70,7 +70,7 @@ class LogRecordProcessorTest extends TestCase
 
         $this->assertStringContainsString('{"now":"2000-01-01 11:00:00"}', $before->value);
         $this->assertStringContainsString('{"now":"2000-01-01 11:00:00"}', $after->value);
-        $this->assertStringContainsString('{\"now\":\"2000-01-01 00:00:00.000000+00:00\"}', $ingest->value);
+        $this->assertStringContainsString('{\"now\":\"2000-01-01 00:00:00.000000+00:00\"}', $ingest->records());
     }
 
     public function test_it_preserves_timezone_for_record(): void
@@ -97,6 +97,6 @@ class LogRecordProcessorTest extends TestCase
         [$log, $ingest] = $streams;
 
         $this->assertStringContainsString('{"now":"2000-01-01 11:00:00"}', $log->value);
-        $this->assertStringContainsString('{\"now\":\"2000-01-01 00:00:00.000000+00:00\"}', $ingest->value);
+        $this->assertStringContainsString('{\"now\":\"2000-01-01 00:00:00.000000+00:00\"}', $ingest->records());
     }
 }

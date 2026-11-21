@@ -12,10 +12,12 @@ use Tests\TcpServerFake;
 use Tests\TestCase;
 use Tests\Timer;
 use Watchtower\LaravelAgent\Frame;
+use Watchtower\LaravelAgent\Mac;
 use Watchtower\LaravelAgent\Protocol;
 
 use function array_fill;
 use function count;
+use function str_repeat;
 
 class ServerTest extends TestCase
 {
@@ -332,6 +334,90 @@ class ServerTest extends TestCase
         );
     }
 
+    public function test_it_rejects_a_batch_with_an_invalid_signature(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).TcpServerFake::batchFrame([['t' => 'request']], mac: str_repeat('0', 64)),
+            'invalid_mac',
+            '{date} {error} Connection error: Rejected a command with an invalid signature\.',
+        );
+    }
+
+    public function test_a_recorded_batch_cannot_be_replayed_on_a_new_connection(): void
+    {
+        // Correctly signed, but for an earlier connection's session and nonce.
+        $recorded = Mac::command(Mac::key(self::token()), Protocol::TYPE_TELEMETRY_BATCH, 'sess_test', 1, TcpServerFake::CLIENT_NONCE, 'an-earlier-nonce', Frame::json([['t' => 'request']]));
+
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).TcpServerFake::batchFrame([['t' => 'request']], mac: $recorded),
+            'invalid_mac',
+            '{date} {error} Connection error: Rejected a command with an invalid signature\.',
+        );
+    }
+
+    public function test_records_must_be_the_last_member_of_the_batch(): void
+    {
+        // Signed over the records, but the bytes after `"records":` aren't just the records.
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash()).Frame::encode([
+                'type' => Protocol::TYPE_TELEMETRY_BATCH,
+                'protocol' => Protocol::NAME,
+                'protocol_version' => Protocol::VERSION,
+                'batch_version' => Protocol::BATCH_VERSION,
+                'session_id' => 'sess_test',
+                'sequence' => 1,
+                'records' => [['t' => 'request']],
+                'mac' => TcpServerFake::SIGN,
+            ]),
+            'invalid_mac',
+            '{date} {error} Connection error: Rejected a command with an invalid signature\\.',
+        );
+    }
+
+    public function test_it_refuses_an_application_on_protocol_1_without_stopping(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame(self::tokenHash(), protocolVersion: 1, signed: false),
+            'unsupported_protocol',
+            '{date} {error} Refused data from an application still running an older Watchtower agent\. .*',
+        );
+    }
+
+    public function test_an_unsigned_hello_with_a_wrong_token_is_a_token_mismatch(): void
+    {
+        $this->assertProtocolRejected(
+            TcpServerFake::helloFrame('INVALID', protocolVersion: 1, signed: false),
+            'token_mismatch',
+            '{date} {error} Incoming token hash mismatch! Check your application/agent configuration.',
+        );
+    }
+
+    public function test_the_welcome_proves_the_sidecar_holds_the_token(): void
+    {
+        $loop = new LoopFake(runForSeconds: 1);
+        $server = new TcpServerFake;
+
+        $ingestDetailsBrowser = new BrowserFake([Response::jwt()]);
+        $ingestBrowser = new BrowserFake;
+
+        $loop->addTimer(0, $server->pendingConnection(TcpServerFake::helloFrame(self::tokenHash())));
+
+        [, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $welcome = Frame::decodeAll($server->connections[0]->payload)[0];
+        $this->assertSame(Protocol::TYPE_WELCOME, $welcome['type']);
+        $this->assertIsString($welcome['nonce']);
+        $this->assertIsString($welcome['session_id']);
+        $this->assertSame(Mac::welcome(Mac::key(self::token()), TcpServerFake::CLIENT_NONCE, $welcome['session_id'], $welcome['nonce']), $welcome['mac']);
+    }
+
     public function test_it_rejects_an_invalid_length_prefix_without_waiting(): void
     {
         $this->assertProtocolRejected(
@@ -360,6 +446,7 @@ class ServerTest extends TestCase
                 'batch_version' => Protocol::BATCH_VERSION,
                 'session_id' => 'sess_test',
                 'sequence' => 1,
+                'mac' => TcpServerFake::SIGN,
                 'records' => ['t' => 'request'],
             ]),
             'invalid_records',

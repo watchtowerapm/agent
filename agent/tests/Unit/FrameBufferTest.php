@@ -63,4 +63,23 @@ class FrameBufferTest extends TestCase
         $this->assertSame(4, $ping['sequence']);
         $this->assertNull($buffer->shift());
     }
+
+    public function test_spliced_records_come_back_byte_for_byte(): void
+    {
+        $records = '[{"t":"request","url":"https://example.test/a/b","duration":1.0,"note":"\\"records\\":[]"}]';
+        $wire = Frame::encodeWithRawMember(['type' => Protocol::TYPE_TELEMETRY_BATCH, 'sequence' => 1], 'records', $records);
+
+        $buffer = new FrameBuffer;
+        $buffer->append(substr($wire, 0, 7));
+        $buffer->append(substr($wire, 7));
+        $message = $buffer->shift();
+
+        $this->assertSame([['t' => 'request', 'url' => 'https://example.test/a/b', 'duration' => 1.0, 'note' => '"records":[]']], $message['records'] ?? null);
+        $this->assertSame($records, Frame::rawLastMember($buffer->lastBody(), 'records'));
+    }
+
+    public function test_a_body_without_the_member_last_has_no_raw_member(): void
+    {
+        $this->assertNull(Frame::rawLastMember('{"type":"ping","sequence":1}', 'records'));
+    }
 }

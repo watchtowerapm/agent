@@ -74,7 +74,10 @@ class PayloadTest extends TestCase
 
     public function test_it_has_up_to_date_protocol_version(): void
     {
-        $this->assertSame(1, Payload::PROTOCOL_VERSION, 'Protocol version has changed! this indicates that a new major version must be tagged');
+        // 2: signed sessions (HMAC). The app and the sidecar ship in one package, and a sidecar on
+        // an older protocol stops when an upgraded app connects, so its process manager restarts
+        // it on the new version.
+        $this->assertSame(2, Payload::PROTOCOL_VERSION, 'Protocol version has changed! Check the upgrade path between app and sidecar before releasing.');
         $this->assertSame(Protocol::NAME, Payload::PROTOCOL);
     }
 }

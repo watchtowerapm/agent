@@ -5,6 +5,7 @@ namespace Watchtower\LaravelAgent;
 use UnexpectedValueException;
 
 use function array_shift;
+use function strpos;
 use function substr;
 
 /**
@@ -23,6 +24,13 @@ final class FrameBuffer
      * @var list<array<string, mixed>>
      */
     private array $messages = [];
+
+    /**
+     * @var list<string>
+     */
+    private array $bodies = [];
+
+    private string $lastBody = '';
 
     private ?string $error = null;
 
@@ -45,7 +53,17 @@ final class FrameBuffer
             return null;
         }
 
+        $this->lastBody = array_shift($this->bodies) ?? '';
+
         return array_shift($this->messages);
+    }
+
+    /**
+     * The raw JSON body of the frame shift() returned last.
+     */
+    public function lastBody(): string
+    {
+        return $this->lastBody;
     }
 
     public function isEmpty(): bool
@@ -79,7 +97,9 @@ final class FrameBuffer
             }
 
             [$message, $consumed] = $decoded;
+            $start = (int) strpos($this->buffer, "\n") + 1;
             $this->messages[] = $message;
+            $this->bodies[] = substr($this->buffer, $start, $consumed - $start);
             $this->buffer = substr($this->buffer, $consumed);
         }
     }

@@ -11,9 +11,9 @@ final class Protocol
 {
     public const NAME = 'watchtower';
 
-    public const VERSION = 1;
+    public const VERSION = 2;
 
-    public const BATCH_VERSION = 1;
+    public const BATCH_VERSION = 2;
 
     public const MAX_BATCH = 500;
 
@@ -60,4 +60,6 @@ final class Protocol
     public const ERROR_BATCH_TOO_LARGE = 'batch_too_large';
 
     public const ERROR_IDLE_TIMEOUT = 'idle_timeout';
+
+    public const ERROR_INVALID_MAC = 'invalid_mac';
 }
