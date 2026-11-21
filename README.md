@@ -52,14 +52,13 @@ php artisan vendor:publish --tag=watchtower-config
 ```env
 WATCHTOWER_ENABLED=true
 WATCHTOWER_TOKEN=
-WATCHTOWER_BASE_URL=https://your-watchtower-api.example
 WATCHTOWER_INGEST_URI=127.0.0.1:2407
 ```
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `WATCHTOWER_TOKEN` | Yes for sidecar + HELLO hash | Platform bearer token |
-| `WATCHTOWER_BASE_URL` | Yes for sidecar process | Platform origin (no Nightwatch default) |
+| `WATCHTOWER_BASE_URL` | No | Platform origin. Defaults to `https://api.watchtowers.cloud`; set it only for a self-hosted or staging platform |
 | `WATCHTOWER_INGEST_URI` | No | Where the app sends frames / sidecar listens |
 | `WATCHTOWER_ENABLED` | No | Default `true` |
 | `WATCHTOWER_DEPLOY` | For `watchtower:deploy` | Deploy identifier |
@@ -91,7 +90,6 @@ Docker image from this repo:
 docker build -f agent/Dockerfile -t watchtower-agent .
 docker run --rm \
   -e WATCHTOWER_TOKEN \
-  -e WATCHTOWER_BASE_URL \
   -p 2407:2407 \
   watchtower-agent
 ```

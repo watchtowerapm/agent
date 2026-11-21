@@ -58,7 +58,8 @@ $connectionIdleTimeout ??= (float) Protocol::IDLE_TIMEOUT_SECONDS;
 $refreshToken ??= $_SERVER['WATCHTOWER_TOKEN'] ?? getenv('WATCHTOWER_TOKEN') ?: '';
 /** @var string $refreshToken */
 /** @var ?string $baseUrl */
-$baseUrl ??= $_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: '';
+// The Watchtower platform; WATCHTOWER_BASE_URL overrides it (self-hosted or staging platforms).
+$baseUrl ??= $_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: 'https://api.watchtowers.cloud';
 /** @var string $baseUrl */
 /** @var ?string $listenOn */
 $listenOn ??= $_SERVER['WATCHTOWER_INGEST_URI'] ?? '127.0.0.1:2407';
@@ -121,12 +122,6 @@ $error = static function (string $message) use ($silent, $stdErr): void {
         $stdErr->write(date('Y-m-d H:i:s').' [ERROR] '.$message.PHP_EOL);
     }
 };
-
-if ($baseUrl === '') {
-    $error('Please configure the [WATCHTOWER_BASE_URL] environment variable to your Watchtower platform origin.');
-
-    return;
-}
 
 /*
  * Internal state...

@@ -3,6 +3,10 @@
 return [
     'enabled' => env('WATCHTOWER_ENABLED', true),
     'token' => env('WATCHTOWER_TOKEN'),
+    // The Watchtower platform. Set WATCHTOWER_BASE_URL only to point the agent somewhere else
+    // (e.g. a self-hosted or staging platform). Read from config so the agent and
+    // `watchtower:deploy` still work after `php artisan optimize` / `config:cache`.
+    'base_url' => env('WATCHTOWER_BASE_URL') ?: 'https://api.watchtowers.cloud',
     'deployment' => env('WATCHTOWER_DEPLOY', env('LARAVEL_CLOUD_DEPLOY_UUID', env('FORGE_DEPLOY_COMMIT', env('VAPOR_COMMIT_HASH')))),
     'server' => env('WATCHTOWER_SERVER'),
     'capture_exception_source_code' => env('WATCHTOWER_CAPTURE_EXCEPTION_SOURCE_CODE', true),
@@ -24,6 +28,15 @@ return [
         'ignore_outgoing_requests' => env('WATCHTOWER_IGNORE_OUTGOING_REQUESTS', false),
         'ignore_queries' => env('WATCHTOWER_IGNORE_QUERIES', false),
         'log_level' => env('WATCHTOWER_LOG_LEVEL', env('LOG_LEVEL', 'debug')),
+    ],
+
+    // The agent process (`php artisan watchtower:agent`).
+    'agent' => [
+        'log_level' => env('WATCHTOWER_AGENT_LOG_LEVEL'),
+        // Where undelivered payloads wait until Watchtower is reachable; an empty string turns it off.
+        'spool_path' => env('WATCHTOWER_SPOOL_PATH'),
+        'spool_max_mb' => env('WATCHTOWER_SPOOL_MAX_MB'),
+        'spool_max_age_hours' => env('WATCHTOWER_SPOOL_MAX_AGE_HOURS'),
     ],
 
     'ingest' => [
