@@ -4,8 +4,11 @@ namespace Tests;
 
 use Throwable;
 use Watchtower\LaravelAgent\Frame;
+use Watchtower\LaravelAgent\Mac;
 
 use function array_shift;
+use function is_array;
+use function is_int;
 use function is_string;
 
 class PendingConnection
@@ -46,12 +49,30 @@ class PendingConnection
         $connection->emit('data', [Frame::encode($first)]);
 
         if ($messages !== []) {
-            $sessionId = $this->issuedSessionId($connection);
+            $welcome = $this->welcome($connection);
+            $sessionId = $welcome['session_id'] ?? null;
+            $sessionId = is_string($sessionId) ? $sessionId : null;
             $wire = '';
 
             foreach ($messages as $message) {
                 if ($sessionId !== null && ($message['session_id'] ?? null) === 'sess_test') {
                     $message['session_id'] = $sessionId;
+                }
+
+                // Sign the command the way the application would, now that WELCOME is known.
+                if (($message['mac'] ?? null) === TcpServerFake::SIGN && is_string($welcome['nonce'] ?? null)) {
+                    $type = is_string($message['type'] ?? null) ? $message['type'] : '';
+                    $records = $type === 'telemetry_batch' && is_array($message['records'] ?? null) ? Frame::json($message['records']) : '';
+
+                    $message['mac'] = Mac::command(
+                        Mac::key(TestCase::token()),
+                        $type,
+                        is_string($message['session_id'] ?? null) ? $message['session_id'] : '',
+                        is_int($message['sequence'] ?? null) ? $message['sequence'] : 0,
+                        is_string($first['nonce'] ?? null) ? $first['nonce'] : '',
+                        $welcome['nonce'],
+                        $records,
+                    );
                 }
 
                 $wire .= Frame::encode($message);
@@ -64,16 +85,15 @@ class PendingConnection
         $this->server->connections[] = $connection;
     }
 
-    private function issuedSessionId(Connection $connection): ?string
+    /**
+     * @return array<string, mixed>
+     */
+    private function welcome(Connection $connection): array
     {
         try {
-            $messages = Frame::decodeAll($connection->payload);
+            return Frame::decodeAll($connection->payload)[0] ?? [];
         } catch (Throwable) {
-            return null;
+            return [];
         }
-
-        $sessionId = $messages[0]['session_id'] ?? null;
-
-        return is_string($sessionId) ? $sessionId : null;
     }
 }

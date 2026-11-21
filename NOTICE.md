@@ -7,7 +7,7 @@ https://github.com/laravel/nightwatch
 **Upstream version:** `laravel/nightwatch` v1.30.0 (MIT License), with the applicable fixes from v1.30.1 – v1.30.6 ported (see `CHANGELOG.md`).  
 Copyright (c) Taylor Otwell — see [LICENSE.md](LICENSE.md).
 
-Watchtower package version is **1.1.1**. That is independent of Nightwatch’s 1.30.0 tag and of the on-the-wire `protocol_version` (`1`).
+Watchtower package version is **1.1.1**. That is independent of Nightwatch’s 1.30.0 tag and of the on-the-wire `protocol_version` (`2`).
 
 ## What was forked
 
@@ -25,13 +25,13 @@ From **1.0.0**, the agent ↔ sidecar session is a Watchtower protocol, not Nigh
 | Layer | Versioning |
 | --- | --- |
 | Package | `1.1.1` (`version.txt`, `composer.json`) |
-| Protocol | `protocol` = `watchtower`, `protocol_version` = `1` (HELLO / WELCOME) |
+| Protocol | `protocol` = `watchtower`, `protocol_version` = `2` (HELLO / WELCOME) |
 | Batch | `batch_version` = `1` (`telemetry_batch`) |
 | Events | Existing record shapes (`t`, fields) until a Watchtower event model lands |
 
 Handshake: HELLO → WELCOME (`session_id`, `max_batch`) → TELEMETRY_BATCH or PING → ACK.
 
-The sidecar enforces `session_id`, `sequence` (first command is `1`), `batch_version` (`1`), and `max_batch` (`500`). Auth on the socket is still a shared `token_hash` of the environment token. HMAC/session secrets can replace that without changing sensors.
+The sidecar enforces `session_id`, `sequence` (first command is `1`), `batch_version` (`2`), and `max_batch` (`500`). Every message is signed with HMAC-SHA256 under a key derived from the environment token, with a nonce from each side (protocol 2).
 
 Full wire documentation: [docs/protocol.md](docs/protocol.md).
 

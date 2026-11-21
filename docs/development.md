@@ -179,7 +179,7 @@ Secrets `WATCHTOWER_TOKEN` / `WATCHTOWER_BASE_URL` are optional. Empty secrets f
 5. Rebuild phar (CI will commit on `1.x`).
 6. Update `docs/protocol.md`, `NOTICE.md`, and `CHANGELOG.md`.
 
-Do not bump **package** version to 2.0.0 just because `protocol_version` is 1. Bump `protocol_version` when HELLO/WELCOME meaning changes; bump `batch_version` when the batch envelope changes; bump `version.txt` for the Composer package.
+Do not bump **package** version to 2.0.0 just because `protocol_version` changes. Bump `protocol_version` when HELLO/WELCOME meaning changes; bump `batch_version` when the batch envelope changes; bump `version.txt` for the Composer package.
 
 ## Changing sensors / records
 

@@ -7,6 +7,7 @@ use PHPUnit\Framework\Assert;
 use React\Socket\ServerInterface;
 use RuntimeException;
 use Watchtower\LaravelAgent\Frame;
+use Watchtower\LaravelAgent\Mac;
 use Watchtower\LaravelAgent\Protocol;
 
 use function count;
@@ -14,6 +15,12 @@ use function is_string;
 
 class TcpServerFake extends EventEmitter implements ServerInterface
 {
+    /** The nonce the fake application sends in HELLO. */
+    public const CLIENT_NONCE = '00112233445566778899aabbccddeeff';
+
+    /** Placeholder MAC on a command; PendingConnection signs it once the sidecar's WELCOME is known. */
+    public const SIGN = 'sign';
+
     /**
      * @var list<Connection>
      */
@@ -39,8 +46,14 @@ class TcpServerFake extends EventEmitter implements ServerInterface
         return new PendingConnection($this, self::helloFrame($tokenHash).self::batchFrame($records));
     }
 
-    public static function helloFrame(string $tokenHash, int $protocolVersion = Protocol::VERSION, string $protocol = Protocol::NAME): string
+    /**
+     * Signed with the real token when $tokenHash is the real hash, otherwise with a wrong one.
+     * Unsigned, it is a protocol 1 HELLO (token hash only).
+     */
+    public static function helloFrame(string $tokenHash, int $protocolVersion = Protocol::VERSION, string $protocol = Protocol::NAME, bool $signed = true): string
     {
+        $key = Mac::key($tokenHash === TestCase::tokenHash() ? TestCase::token() : 'not-the-token');
+
         return Frame::encode([
             'type' => Protocol::TYPE_HELLO,
             'protocol' => $protocol,
@@ -49,6 +62,7 @@ class TcpServerFake extends EventEmitter implements ServerInterface
             'sdk' => 'laravel',
             'php_version' => PHP_VERSION,
             'token_hash' => $tokenHash,
+            ...($signed ? ['nonce' => self::CLIENT_NONCE, 'mac' => Mac::hello($key, $protocolVersion, self::CLIENT_NONCE)] : []),
         ]);
     }
 
@@ -60,6 +74,7 @@ class TcpServerFake extends EventEmitter implements ServerInterface
         string $sessionId = 'sess_test',
         int $batchVersion = Protocol::BATCH_VERSION,
         int $sequence = 1,
+        string $mac = self::SIGN,
     ): string {
         return Frame::encode([
             'type' => Protocol::TYPE_TELEMETRY_BATCH,
@@ -68,6 +83,7 @@ class TcpServerFake extends EventEmitter implements ServerInterface
             'batch_version' => $batchVersion,
             'session_id' => $sessionId,
             'sequence' => $sequence,
+            'mac' => $mac,
             'records' => $records,
         ]);
     }
@@ -79,6 +95,7 @@ class TcpServerFake extends EventEmitter implements ServerInterface
             'protocol_version' => Protocol::VERSION,
             'session_id' => $sessionId,
             'sequence' => $sequence,
+            'mac' => self::SIGN,
         ]);
     }
 

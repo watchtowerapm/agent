@@ -7,6 +7,7 @@ require __DIR__.'/vendor/autoload.php';
 use RuntimeException;
 use Throwable;
 use Watchtower\LaravelAgent\Frame;
+use Watchtower\LaravelAgent\Mac;
 use Watchtower\LaravelAgent\Protocol;
 
 use function date;
@@ -110,6 +111,8 @@ try {
      */
 
     $tokenHash = substr(hash('xxh128', $refreshToken), 0, 7);
+    $key = Mac::key($refreshToken);
+    $clientNonce = Mac::nonce();
 
     try {
         stream_configure_read_timeout($stream, $timeout);
@@ -119,6 +122,8 @@ try {
             'protocol' => Protocol::NAME,
             'protocol_version' => Protocol::VERSION,
             'token_hash' => $tokenHash,
+            'nonce' => $clientNonce,
+            'mac' => Mac::hello($key, Protocol::VERSION, $clientNonce),
         ]));
 
         $welcome = $readFrame($stream);
@@ -127,13 +132,19 @@ try {
             throw new RuntimeException('Unexpected response from agent ['.json_encode($welcome).']');
         }
 
-        $sessionId = $welcome['session_id'] ?? '';
+        $sessionId = is_string($welcome['session_id'] ?? null) ? $welcome['session_id'] : '';
+        $serverNonce = is_string($welcome['nonce'] ?? null) ? $welcome['nonce'] : '';
+
+        if ($serverNonce === '' || ! Mac::matches(Mac::welcome($key, $clientNonce, $sessionId, $serverNonce), $welcome['mac'] ?? null)) {
+            throw new RuntimeException('The agent could not prove it uses the same WATCHTOWER_TOKEN');
+        }
 
         fwrite_all($stream, Frame::encode([
             'type' => Protocol::TYPE_PING,
             'protocol_version' => Protocol::VERSION,
-            'session_id' => is_string($sessionId) ? $sessionId : '',
+            'session_id' => $sessionId,
             'sequence' => 1,
+            'mac' => Mac::command($key, Protocol::TYPE_PING, $sessionId, 1, $clientNonce, $serverNonce, ''),
         ]));
 
         $ack = $readFrame($stream);

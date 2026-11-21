@@ -131,6 +131,7 @@ $error = static function (string $message) use ($silent, $stdErr): void {
  */
 
 $tokenHash = substr(hash('xxh128', $refreshToken), 0, 7);
+$sessionKey = Mac::key($refreshToken);
 $fromPhar = str_starts_with(__DIR__, 'phar://');
 /** @var ?string $basePath */
 if ($fromPhar) {
@@ -237,6 +238,7 @@ $ingest = new Ingest(
 
 $server = new Server(
     serverResolver: $serverResolver ?? static fn (): ServerInterface => new TcpServer($listenOn),
+    key: $sessionKey,
     tokenHash: $tokenHash,
     onServerStarted: static fn () => $info("Watchtower agent initiated: Listening on [{$listenOn}]; Version [{$packageVersion}]"),
     onServerError: static fn (string $message) => $error("Server error: {$message}"),
@@ -254,6 +256,7 @@ $server = new Server(
     onInvalidTokenHash: static fn () => $error('Incoming token hash mismatch! Check your application/agent configuration.'),
     loop: $loop,
     idleTimeout: $connectionIdleTimeout,
+    onOutdatedClient: static fn () => $error('Refused data from an application still running an older Watchtower agent. Restart PHP-FPM, Octane and your queue workers (php artisan queue:restart) so they load the new version.'),
 );
 
 $checkSignature = new CheckSignature(

@@ -10,6 +10,7 @@ use UnexpectedValueException;
 use Watchtower\Laravel\Events\IngestingEvents;
 use Watchtower\Laravel\Facades\Watchtower;
 use Watchtower\Laravel\Transport\Frame;
+use Watchtower\Laravel\Transport\Mac;
 use Watchtower\Laravel\Transport\Protocol;
 
 use function array_slice;
@@ -36,7 +37,15 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
     private bool $ingesting = false;
 
     /**
+     * @var callable(): string
+     */
+    public $nonceFactory;
+
+    /**
      * @param  (callable(string $address, float $timeout): resource)  $streamFactory
+     * @param  string  $key  the session key derived from the full token (see Mac::key())
+     * @param  string  $tokenHash  sent only so a sidecar still running protocol 1 recognises an upgraded app and restarts
+     * @param  (callable(): string)|null  $nonceFactory
      */
     public function __construct(
         string $transmitTo,
@@ -47,8 +56,11 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
         private string $tokenHash,
         private Dispatcher $events,
         private string $agentVersion,
+        private string $key,
+        ?callable $nonceFactory = null,
     ) {
         $this->transmitTo = "tcp://{$transmitTo}";
+        $this->nonceFactory = $nonceFactory ?? Mac::nonce(...);
     }
 
     public function write(array $record): void
@@ -88,12 +100,13 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
 
     public function ping(): void
     {
-        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch): void {
+        $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch, callable $sign): void {
             fwrite_all($stream, Frame::encode([
                 'type' => Protocol::TYPE_PING,
                 'protocol_version' => Protocol::VERSION,
                 'session_id' => $sessionId,
                 'sequence' => $sequence,
+                'mac' => $sign(Protocol::TYPE_PING, $sequence, ''),
             ]));
 
             $this->assertAck($this->readFrame($stream, $carry), $sequence);
@@ -160,10 +173,10 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
         $total = count($records);
 
         while ($offset < $total) {
-            $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch) use ($records, &$offset): void {
+            $this->session(function ($stream, string $sessionId, int $sequence, string &$carry, int $maxBatch, callable $sign) use ($records, &$offset): void {
                 $batch = array_slice($records, $offset, $maxBatch);
 
-                $this->transmitBatch($stream, $sessionId, $sequence, $carry, $batch);
+                $this->transmitBatch($stream, $sessionId, $sequence, $carry, $batch, $sign);
 
                 $offset += count($batch);
             });
@@ -171,26 +184,32 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
     }
 
     /**
+     * The records are encoded once and spliced into the frame as its last member, so the
+     * signature covers those exact bytes and the sidecar forwards them without re-encoding.
+     *
      * @param  resource  $stream
      * @param  list<array<mixed>>  $records
+     * @param  callable(string, int, string): string  $sign
      */
-    private function transmitBatch($stream, string $sessionId, int $sequence, string &$carry, array $records): void
+    private function transmitBatch($stream, string $sessionId, int $sequence, string &$carry, array $records, callable $sign): void
     {
-        fwrite_all($stream, Frame::encode([
+        $json = Frame::json($records);
+
+        fwrite_all($stream, Frame::encodeWithRawMember([
             'type' => Protocol::TYPE_TELEMETRY_BATCH,
             'protocol' => Protocol::NAME,
             'protocol_version' => Protocol::VERSION,
             'batch_version' => Protocol::BATCH_VERSION,
             'session_id' => $sessionId,
             'sequence' => $sequence,
-            'records' => $records,
-        ]));
+            'mac' => $sign(Protocol::TYPE_TELEMETRY_BATCH, $sequence, $json),
+        ], 'records', $json));
 
         $this->assertAck($this->readFrame($stream, $carry), $sequence);
     }
 
     /**
-     * @param  callable(resource, string, int, string, int): void  $then
+     * @param  callable(resource, string, int, string, int, callable(string, int, string): string): void  $then
      */
     private function session(callable $then): void
     {
@@ -198,6 +217,8 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
 
         try {
             $this->configureStreamTimeout($stream);
+
+            $clientNonce = (string) call_user_func($this->nonceFactory);
 
             fwrite_all($stream, Frame::encode([
                 'type' => Protocol::TYPE_HELLO,
@@ -207,6 +228,8 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
                 'sdk' => 'laravel',
                 'php_version' => PHP_VERSION,
                 'token_hash' => $this->tokenHash,
+                'nonce' => $clientNonce,
+                'mac' => Mac::hello($this->key, Protocol::VERSION, $clientNonce),
             ]));
 
             $carry = '';
@@ -225,10 +248,20 @@ final class Ingest implements \Watchtower\Laravel\Contracts\Ingest
                 throw new RuntimeException('Unexpected response from agent ['.json_encode($welcome).']');
             }
 
+            $serverNonce = $welcome['nonce'] ?? '';
+            $serverNonce = is_string($serverNonce) ? $serverNonce : '';
+
+            // The sidecar proves it holds the same token before it gets any data.
+            if ($serverNonce === '' || ! Mac::matches(Mac::welcome($this->key, $clientNonce, $sessionId, $serverNonce), $welcome['mac'] ?? null)) {
+                throw new RuntimeException("The Watchtower agent at [{$this->transmitTo}] could not prove it uses the same WATCHTOWER_TOKEN as this application");
+            }
+
             $maxBatch = $welcome['max_batch'] ?? Protocol::MAX_BATCH;
             $maxBatch = is_int($maxBatch) && $maxBatch > 0 ? $maxBatch : Protocol::MAX_BATCH;
 
-            $then($stream, $sessionId, 1, $carry, $maxBatch);
+            $sign = fn (string $type, int $sequence, string $body): string => Mac::command($this->key, $type, $sessionId, $sequence, $clientNonce, $serverNonce, $body);
+
+            $then($stream, $sessionId, 1, $carry, $maxBatch, $sign);
         } finally {
             fclose_safely($stream);
         }

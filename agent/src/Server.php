@@ -17,15 +17,17 @@ use function hash_equals;
 use function is_array;
 use function is_int;
 use function is_string;
-use function json_encode;
 use function random_bytes;
+use function str_starts_with;
+use function strlen;
 
 /**
  * Local TCP endpoint the Laravel package talks to. Each connection is one exchange:
  * HELLO → WELCOME, then one PING or TELEMETRY_BATCH → ACK, then the sidecar closes it.
  *
  * Checks run in this order so unauthenticated clients learn as little as possible and can
- * never stop the sidecar: frame validity, HELLO first, token, protocol, then the command.
+ * never stop the sidecar: frame validity, HELLO first, its signature, protocol, then the
+ * command and its signature. See Mac for what is signed.
  */
 class Server
 {
@@ -37,9 +39,13 @@ class Server
      * @param  (Closure(string $payload): mixed)  $onPayloadReceived
      * @param  (Closure(): mixed)  $onInvalidPayloadVersion
      * @param  (Closure(): mixed)  $onInvalidTokenHash
+     * @param  (Closure(): mixed)|null  $onOutdatedClient  an app still on protocol 1 (it has the token but can't sign)
+     * @param  string  $key  the session key derived from the full token (see Mac::key())
+     * @param  string  $tokenHash  protocol 1's token hash, only to recognise an app that wasn't restarted after an upgrade
      */
     public function __construct(
         private Closure $serverResolver,
+        private string $key,
         private string $tokenHash,
         private Closure $onServerStarted,
         private Closure $onServerError,
@@ -49,6 +55,7 @@ class Server
         private Closure $onInvalidTokenHash,
         private ?LoopInterface $loop = null,
         private float $idleTimeout = 0.0,
+        private ?Closure $onOutdatedClient = null,
     ) {
         //
     }
@@ -60,6 +67,8 @@ class Server
         $server->on('connection', function (ConnectionInterface $connection) use ($server): void {
             $frames = new FrameBuffer;
             $sessionId = null;
+            $clientNonce = '';
+            $serverNonce = '';
             $expectedSequence = 1;
             $recordsJson = null;
             $finished = false;
@@ -74,7 +83,7 @@ class Server
                 }
             };
 
-            $connection->on('data', function (string $chunk) use ($connection, $server, $frames, &$sessionId, &$expectedSequence, &$recordsJson, &$finished, $finish): void {
+            $connection->on('data', function (string $chunk) use ($connection, $server, $frames, &$sessionId, &$clientNonce, &$serverNonce, &$expectedSequence, &$recordsJson, &$finished, $finish): void {
                 if ($finished) {
                     return;
                 }
@@ -100,9 +109,32 @@ class Server
                             return;
                         }
 
-                        $tokenHash = $this->stringField($message, 'token_hash');
+                        $clientNonce = $this->stringField($message, 'nonce');
 
-                        if ($tokenHash === '' || ! hash_equals($this->tokenHash, $tokenHash)) {
+                        if (! isset($message['mac'])) {
+                            $tokenHash = $this->stringField($message, 'token_hash');
+
+                            // Protocol 1 can't sign. If it knows the token, the app is running an
+                            // older agent: refuse it, but don't stop, since this sidecar is newer.
+                            if ($tokenHash !== '' && hash_equals($this->tokenHash, $tokenHash) && $this->intField($message, 'protocol_version') < Protocol::VERSION) {
+                                $this->reject($connection, Protocol::ERROR_UNSUPPORTED_PROTOCOL);
+                                $finish();
+
+                                if ($this->onOutdatedClient !== null) {
+                                    call_user_func($this->onOutdatedClient);
+                                }
+
+                                return;
+                            }
+
+                            $this->reject($connection, Protocol::ERROR_TOKEN_MISMATCH);
+                            $finish();
+                            call_user_func($this->onInvalidTokenHash);
+
+                            return;
+                        }
+
+                        if ($clientNonce === '' || strlen($clientNonce) > 128 || ! Mac::matches(Mac::hello($this->key, $this->intField($message, 'protocol_version'), $clientNonce), $message['mac'])) {
                             $this->reject($connection, Protocol::ERROR_TOKEN_MISMATCH);
                             $finish();
                             call_user_func($this->onInvalidTokenHash);
@@ -120,12 +152,15 @@ class Server
                         }
 
                         $sessionId = 'sess_'.bin2hex(random_bytes(8));
+                        $serverNonce = Mac::nonce();
                         $connection->write(Frame::encode([
                             'type' => Protocol::TYPE_WELCOME,
                             'accepted' => true,
                             'protocol_version' => Protocol::VERSION,
                             'session_id' => $sessionId,
                             'max_batch' => Protocol::MAX_BATCH,
+                            'nonce' => $serverNonce,
+                            'mac' => Mac::welcome($this->key, $clientNonce, $sessionId, $serverNonce),
                         ]));
 
                         continue;
@@ -152,6 +187,25 @@ class Server
                         return;
                     }
 
+                    // A batch's records, exactly as signed: the frame's last member.
+                    $records = $type === Protocol::TYPE_TELEMETRY_BATCH ? Frame::rawLastMember($frames->lastBody(), 'records') : '';
+                    $decoded = $type === Protocol::TYPE_TELEMETRY_BATCH ? ($message['records'] ?? null) : [];
+
+                    if ($records === null || ! is_array($decoded) || ! array_is_list($decoded) || ($type === Protocol::TYPE_TELEMETRY_BATCH && ! str_starts_with($records, '['))) {
+                        $this->reject($connection, Protocol::ERROR_INVALID_RECORDS);
+                        $finish();
+
+                        return;
+                    }
+
+                    if (! Mac::matches(Mac::command($this->key, $type, $sessionId, $expectedSequence, $clientNonce, $serverNonce, $records), $message['mac'] ?? null)) {
+                        $this->reject($connection, Protocol::ERROR_INVALID_MAC);
+                        $finish();
+                        call_user_func($this->onConnectionError, 'Rejected a command with an invalid signature.');
+
+                        return;
+                    }
+
                     if ($type === Protocol::TYPE_PING) {
                         $this->ack($connection, $expectedSequence, 0);
                         $finish();
@@ -166,24 +220,15 @@ class Server
                         return;
                     }
 
-                    $records = $message['records'] ?? null;
-
-                    if (! is_array($records) || ! array_is_list($records)) {
-                        $this->reject($connection, Protocol::ERROR_INVALID_RECORDS);
-                        $finish();
-
-                        return;
-                    }
-
-                    if (count($records) > Protocol::MAX_BATCH) {
+                    if (count($decoded) > Protocol::MAX_BATCH) {
                         $this->reject($connection, Protocol::ERROR_BATCH_TOO_LARGE);
                         $finish();
 
                         return;
                     }
 
-                    $recordsJson = $records === [] ? null : json_encode($records, flags: JSON_THROW_ON_ERROR);
-                    $this->ack($connection, $expectedSequence, count($records));
+                    $recordsJson = $decoded === [] ? null : $records;
+                    $this->ack($connection, $expectedSequence, count($decoded));
                     $finish();
 
                     return;

@@ -7,7 +7,7 @@ Watchtower Agent 1.0.0 is derived from [`laravel/nightwatch`](https://github.com
 This git repository is Watchtower’s history, not Nightwatch’s. Do not treat Nightwatch tags (1.30.x, 1.x Nightwatch branches) as Watchtower package versions.
 
 **Watchtower package version = 1.0.0.**  
-**On-the-wire `protocol_version` = 1.**  
+**On-the-wire `protocol_version` = 2** (1 until signed sessions were added).  
 Those numbers are independent.
 
 ## Kept (MIT-derived, still the right instrumentation)
@@ -34,7 +34,7 @@ Do not rewrite these to “make the protocol Watchtower.” Event JSON (`t` and 
 
 | Item | Status |
 | --- | --- |
-| HMAC / challenge on the socket | Deferred; still `token_hash` |
+| HMAC / challenge on the socket | Added in protocol 2 (signed HELLO, WELCOME and commands) |
 | New Watchtower event DTOs | Records keep Nightwatch-shaped fields |
 | Long-lived TCP sessions with incrementing sequence | One command per connection |
 | Live Watchtower in GitHub Actions | Fixture URL + skipped live auth tests |

@@ -17,6 +17,7 @@ use function collect;
 use function dd;
 use function dump;
 use function is_array;
+use function is_string;
 use function json_decode;
 use function json_encode;
 use function str_contains;
@@ -135,9 +136,12 @@ class FakeIngest implements IngestContract
         return $this;
     }
 
+    /**
+     * The latest batch's records exactly as sent (the bytes the sidecar forwards).
+     */
     public function latestWriteAsString(): ?string
     {
-        return $this->streams->last()?->value;
+        return $this->streams->last()?->records();
     }
 
     public function writes(): Collection
@@ -147,7 +151,9 @@ class FakeIngest implements IngestContract
 
             foreach ($messages as $message) {
                 if (($message['type'] ?? null) === Protocol::TYPE_TELEMETRY_BATCH) {
-                    return json_encode($message['records'] ?? [], flags: JSON_THROW_ON_ERROR);
+                    $records = $message['records'] ?? '[]';
+
+                    return json_encode(is_string($records) ? json_decode($records, true, flags: JSON_THROW_ON_ERROR) : $records, flags: JSON_THROW_ON_ERROR);
                 }
             }
 

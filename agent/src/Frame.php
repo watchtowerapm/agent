@@ -8,6 +8,8 @@ use UnexpectedValueException;
 use function is_array;
 use function json_decode;
 use function json_encode;
+use function str_ends_with;
+use function str_starts_with;
 use function strlen;
 use function strpos;
 use function strspn;
@@ -32,9 +34,50 @@ final class Frame
      */
     public static function encode(array $message): string
     {
-        $json = json_encode($message, flags: JSON_INVALID_UTF8_SUBSTITUTE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $json = self::json($message);
 
         return strlen($json)."\n".$json;
+    }
+
+    /**
+     * A frame whose member $key is spliced in, byte for byte, as the body's last member. Used for
+     * batch records: they are encoded once, signed as these bytes, and the sidecar forwards the
+     * same bytes without decoding and encoding them again.
+     *
+     * @param  array<string, mixed>  $message
+     */
+    public static function encodeWithRawMember(array $message, string $key, string $json): string
+    {
+        $body = substr(self::json($message), 0, -1).($message === [] ? '' : ',').'"'.$key.'":'.$json.'}';
+
+        return strlen($body)."\n".$body;
+    }
+
+    /**
+     * The raw JSON of member $key in a frame body written by encodeWithRawMember(), or null when
+     * the body isn't shaped that way.
+     */
+    public static function rawLastMember(string $body, string $key): ?string
+    {
+        $marker = '"'.$key.'":';
+        $at = strpos($body, ",{$marker}");
+        $at = $at === false ? (str_starts_with($body, "{{$marker}") ? 0 : false) : $at;
+
+        if ($at === false || ! str_ends_with($body, '}')) {
+            return null;
+        }
+
+        return substr($body, $at + 1 + strlen($marker), -1);
+    }
+
+    /**
+     * JSON with the flags every frame uses.
+     *
+     * @param  array<mixed>  $value
+     */
+    public static function json(array $value): string
+    {
+        return json_encode($value, flags: JSON_INVALID_UTF8_SUBSTITUTE | JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     /**

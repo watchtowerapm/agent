@@ -8,7 +8,7 @@ This project is derived from [`laravel/nightwatch`](https://github.com/laravel/n
 | --- | --- |
 | Package version | **1.1.1** (`version.txt`) |
 | Git branch | `1.x` |
-| Wire protocol | `watchtower` / `protocol_version` **1** |
+| Wire protocol | `watchtower` / `protocol_version` **2** |
 | PHP | 8.2–8.5 |
 | Laravel | 10–13 |
 
@@ -110,13 +110,13 @@ php artisan watchtower:deploy
 Framing: `{byte_length}\\n{json}`.
 
 ```
-HELLO (protocol=watchtower, protocol_version=1, token_hash)
-  → WELCOME (session_id, max_batch=500)
-  → telemetry_batch | ping  (session_id, sequence=1)
+HELLO (protocol=watchtower, protocol_version=2, nonce, mac)
+  → WELCOME (session_id, max_batch=500, nonce, mac)
+  → telemetry_batch | ping  (session_id, sequence=1, mac)
   → ACK
 ```
 
-The sidecar rejects mismatched session, sequence ≠ 1, `batch_version` ≠ 1, and batches larger than 500. Socket auth is a short `token_hash` of the env token — **not HMAC**. Bind the listen address to localhost. Details: [docs/protocol.md](docs/protocol.md).
+Every message is signed with HMAC-SHA256, using a key derived from the full `WATCHTOWER_TOKEN` (the token never crosses the socket); batch records are covered by an xxh128 digest inside the signature, to keep the cost per request low. Each side sends a fresh nonce, so a recorded exchange can't be replayed, and the app sends nothing until the sidecar has proved it holds the same token. The sidecar also rejects mismatched session, sequence ≠ 1, `batch_version` ≠ 2, and batches larger than 500. Keep the listen address on localhost or a private network anyway. Details: [docs/protocol.md](docs/protocol.md).
 
 ---
 

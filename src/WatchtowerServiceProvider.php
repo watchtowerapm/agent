@@ -89,6 +89,7 @@ use Watchtower\Laravel\Records\Request;
 use Watchtower\Laravel\State\CommandState;
 use Watchtower\Laravel\State\RequestState;
 use Watchtower\Laravel\Support\Uuid;
+use Watchtower\Laravel\Transport\Mac;
 
 use function class_exists;
 use function defined;
@@ -280,6 +281,7 @@ final class WatchtowerServiceProvider extends ServiceProvider
                 tokenHash: $tokenHash,
                 events: $this->app->make(Dispatcher::class),
                 agentVersion: rtrim((string) @file_get_contents(dirname(__DIR__).'/version.txt')) ?: '0.0.0',
+                key: Mac::key($this->watchtowerConfig['token'] ?? ''),
             ),
             sensor: new SensorManager(
                 executionState: $executionState,

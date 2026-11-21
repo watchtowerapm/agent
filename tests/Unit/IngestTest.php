@@ -12,8 +12,10 @@ use Tests\TestCase;
 use Watchtower\Laravel\Events\IngestingEvents;
 use Watchtower\Laravel\Facades\Watchtower;
 use Watchtower\Laravel\Transport\Frame;
+use Watchtower\Laravel\Transport\Mac;
 use Watchtower\Laravel\Transport\Protocol;
 
+use function array_column;
 use function array_filter;
 use function array_key_exists;
 use function array_shift;
@@ -22,10 +24,12 @@ use function call_user_func_array;
 use function collect;
 use function count;
 use function fclose;
+use function file_get_contents;
 use function fopen;
 use function implode;
 use function min;
 use function phpversion;
+use function preg_replace;
 use function report;
 use function str_split;
 use function stream_wrapper_register;
@@ -605,18 +609,7 @@ class IngestTest extends TestCase
     public function test_it_splits_buffers_larger_than_the_announced_max_batch(): void
     {
         StreamWrapper::intercept('stream_open', function (string $path, string $mode, int $options, ?string &$openedPath): bool {
-            StreamWrapper::$readBuffer = Frame::encode([
-                'type' => Protocol::TYPE_WELCOME,
-                'accepted' => true,
-                'protocol_version' => Protocol::VERSION,
-                'session_id' => 'sess_test',
-                'max_batch' => 2,
-            ]).Frame::encode([
-                'type' => Protocol::TYPE_ACK,
-                'sequence' => 1,
-                'accepted' => 2,
-                'rejected' => 0,
-            ]);
+            StreamWrapper::$readBuffer = SidecarReply::welcome(maxBatch: 2).SidecarReply::ack(accepted: 2);
             StreamWrapper::$readOffset = 0;
 
             return true;
@@ -671,6 +664,67 @@ class IngestTest extends TestCase
 
         $this->assertCount(1, $exceptions);
         $this->assertSame('The Watchtower agent rejected the connection [token_mismatch]', $exceptions[0]->getMessage());
+    }
+
+    public function test_it_sends_nothing_to_a_sidecar_that_cannot_prove_it_holds_the_token(): void
+    {
+        StreamWrapper::intercept('stream_open', function (string $path, string $mode, int $options, ?string &$openedPath): bool {
+            StreamWrapper::$readBuffer = Frame::encode([
+                'type' => Protocol::TYPE_WELCOME,
+                'accepted' => true,
+                'protocol_version' => Protocol::VERSION,
+                'session_id' => 'sess_test',
+                'max_batch' => Protocol::MAX_BATCH,
+                'nonce' => SidecarReply::SERVER_NONCE,
+                'mac' => Mac::welcome(Mac::key('not-the-token'), SidecarReply::CLIENT_NONCE, 'sess_test', SidecarReply::SERVER_NONCE),
+            ]).SidecarReply::ack();
+            StreamWrapper::$readOffset = 0;
+
+            return true;
+        });
+        $writes = '';
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            $writes .= $value;
+
+            return strlen($value);
+        });
+        $exceptions = collect();
+        Watchtower::handleUnrecoverableExceptionsUsing($exceptions->push(...));
+
+        $this->core->ingest->writeNow(FakeRecord::make());
+
+        $this->assertCount(1, $exceptions);
+        $this->assertSame('The Watchtower agent at [tcp://127.0.0.1:2407] could not prove it uses the same WATCHTOWER_TOKEN as this application', $exceptions[0]->getMessage());
+        $this->assertSame([Protocol::TYPE_HELLO], array_column(Frame::decodeAll($writes), 'type'));
+    }
+
+    public function test_it_signs_the_hello_and_the_batch(): void
+    {
+        $writes = '';
+        StreamWrapper::intercept('stream_write', function (string $value) use (&$writes) {
+            $writes .= $value;
+
+            return strlen($value);
+        });
+
+        $this->core->ingest->writeNow(FakeRecord::make());
+
+        [$hello, $batch] = Frame::decodeAll($writes);
+        $key = SidecarReply::key();
+        $this->assertSame(SidecarReply::CLIENT_NONCE, $hello['nonce']);
+        $this->assertSame(Mac::hello($key, Protocol::VERSION, SidecarReply::CLIENT_NONCE), $hello['mac']);
+        $this->assertSame([FakeRecord::make()], $batch['records']);
+        $this->assertSame(
+            Mac::command($key, Protocol::TYPE_TELEMETRY_BATCH, 'sess_test', 1, SidecarReply::CLIENT_NONCE, SidecarReply::SERVER_NONCE, Frame::json($batch['records'])),
+            $batch['mac'],
+        );
+    }
+
+    public function test_the_mac_helper_is_identical_in_the_sdk_and_the_sidecar(): void
+    {
+        $strip = fn (string $path) => preg_replace('/^namespace .*$/m', '', (string) file_get_contents($path));
+
+        $this->assertSame($strip(__DIR__.'/../../src/Transport/Mac.php'), $strip(__DIR__.'/../../agent/src/Mac.php'));
     }
 }
 

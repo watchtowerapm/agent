@@ -5,10 +5,14 @@ namespace Tests;
 use Illuminate\Support\Collection;
 use PHPUnit\Framework\Assert;
 use RuntimeException;
+use Watchtower\Laravel\Transport\Frame;
+use Watchtower\Laravel\Transport\Protocol;
 
 use function call_user_func_array;
 use function is_string;
+use function str_starts_with;
 use function strlen;
+use function strpos;
 use function substr;
 
 class FakeTcpStream
@@ -64,6 +68,27 @@ class FakeTcpStream
         };
 
         return call_user_func_array($handler, $arguments);
+    }
+
+    /**
+     * The batch's records exactly as sent (the bytes the sidecar forwards), or null when no
+     * batch was written.
+     */
+    public function records(): ?string
+    {
+        $offset = 0;
+
+        while (($newline = strpos($this->value, "\n", $offset)) !== false) {
+            $size = (int) substr($this->value, $offset, $newline - $offset);
+            $body = substr($this->value, $newline + 1, $size);
+            $offset = $newline + 1 + $size;
+
+            if (str_starts_with($body, '{"type":"'.Protocol::TYPE_TELEMETRY_BATCH.'"')) {
+                return Frame::rawLastMember($body, 'records');
+            }
+        }
+
+        return null;
     }
 
     public function assertWritten(string|callable $value): self
