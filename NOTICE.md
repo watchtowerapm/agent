@@ -34,3 +34,7 @@ Handshake: HELLO → WELCOME (`session_id`, `max_batch`) → TELEMETRY_BATCH or 
 The sidecar enforces `session_id`, `sequence` (first command is `1`), `batch_version` (`1`), and `max_batch` (`500`). Auth on the socket is still a shared `token_hash` of the environment token. HMAC/session secrets can replace that without changing sensors.
 
 Full wire documentation: [docs/protocol.md](docs/protocol.md).
+
+## Terms of use
+
+Use of this agent with the Watchtower service is subject to the [Watchtower Terms of Service](https://watchtowers.cloud/terms#agent) (section 6, "Agent and your server resources", and section 8, "Acceptable use"). Those terms do not change the MIT license of the code; they are an agreement between Watchtower and its customers.
