@@ -1,5 +1,10 @@
 # Release Notes
 
+## 1.2.1 - 2026-11-21
+
+- Agent: `psr/http-message` 2.0 (from 1.1), still resolved for PHP 8.2. Internal to the agent binary; no change in behaviour.
+- README and NOTICE link the Watchtower Terms of Service that apply when the agent is used with the Watchtower service. The code stays MIT-licensed.
+
 ## 1.2.0 - 2026-11-21
 
 - Sampling rates and event filters can be set per environment in the Watchtower panel, without editing `.env` or redeploying. The agent receives them when it authenticates and writes them to `bootstrap/cache/watchtower-settings.php` (only known keys with valid values, only when they change; removed when the panel has none). The package merges them over its config at boot: a plain `return [...]` file, so with opcache it costs next to nothing per request. Settings left empty in the panel keep the app's own values.
