@@ -187,12 +187,25 @@ Stay compatible with existing `t` payloads unless the platform is updated in loc
 
 Coding conventions: `AGENTS.md` (this repo).
 
+## Changes and commits
+
+One change per pull request, squash-merged, so `1.x` reads as one commit per change:
+
+- Title in the imperative, short and specific: "Resolve server hostname at runtime", "Fix spool drain after a 401". It becomes the commit on `1.x` and a line in the release notes.
+- Don't bump `version.txt`, `composer.json` or `CHANGELOG.md` in a change PR; releases do that.
+- CI rebuilds `agent.phar` and commits it to the PR branch ("Rebuild agent"); the squash folds it into the PR's commit. If that commit's run waits for approval, approve it in Actions.
+- Dependabot PRs can't commit the rebuilt agent: comment `@dependabot rebase` if it's behind, then push an empty commit to its branch so CI runs with write access.
+
 ## Releases
 
-1. Set `version.txt` and `composer.json` version.
-2. `CHANGELOG.md` entry.
-3. Ensure CI on `1.x` is green and phar signature commit is present if agent sources changed.
-4. Tag from `1.x` (e.g. `v1.0.0`) when you publish to Packagist.
+Run **Actions → Create release → Run workflow** on `1.x` and pick patch, minor or major. It:
+
+1. bumps `version.txt` and `composer.json`;
+2. writes the release notes from the pull requests merged since the last tag into `CHANGELOG.md`;
+3. commits "Bump version to vX.Y.Z", tags `vX.Y.Z` and pushes both (with the deploy key, which the `1.x` and tag rulesets let bypass);
+4. publishes the GitHub release, marked latest.
+
+Packagist and the Watchtower platform pick the tag up from their webhooks. Then add the release to the website's changelog (`website/app/pages/docs/changelog.vue`, Persian).
 
 ## Security reporting
 

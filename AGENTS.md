@@ -4,7 +4,7 @@
 
 Watchtower Agent is a Laravel monitoring package derived from laravel/nightwatch (MIT). It gathers metrics in Laravel applications and transmits them to a self-hosted Watchtower instance.
 
-Package version **1.0.0**. Contributor docs: `docs/README.md`.
+Package version: see `version.txt`. Contributor docs: `docs/README.md`.
 
 ## Code Style & Formatting
 
@@ -119,7 +119,7 @@ final class QueryExecutedListener
 
 - **Laravel versions**: Support Laravel 10, 11, 12, and 13
 - **PHP versions**: Minimum PHP 8.2
-- **Package version**: `version.txt` (1.0.0). Independent of `protocol_version` (1)
+- **Package version**: `version.txt`. Independent of `protocol_version` (1)
 - **Protocol docs**: `docs/protocol.md` — update when changing HELLO/WELCOME/batch
 - **Backward compatibility**: Maintain backward compatibility within major versions
 - **Compatibility layer**: Use `Compatibility` class for version-specific code
@@ -240,10 +240,10 @@ Compatibility flags in the `Compatibility` class are used to handle version-spec
 ## Git & Versioning
 
 - **Branch**: Work on `1.x` branch
-- **Changelog**: Update `CHANGELOG.md` for user-facing changes
-- **Version**: Package version in `version.txt` and `composer.json` (currently 1.0.0)
+- **One change per PR**: squash-merged with a short imperative title (it becomes the commit on `1.x` and a release-notes line). See `docs/development.md`
+- **Version and changelog**: never bumped by hand in a change PR; the "Create release" workflow bumps `version.txt`/`composer.json` and writes `CHANGELOG.md` from merged PRs
 - **Docs**: Keep `docs/` in sync with protocol and CI behaviour
-- **Commits**: Write clear, descriptive commit messages
+- **Commits**: Write clear, descriptive commit messages; no bundled "Release …" commits
 
 ## Development Workflow
 
