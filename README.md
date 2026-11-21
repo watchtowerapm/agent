@@ -160,6 +160,16 @@ Full contributor workflow: [docs/development.md](docs/development.md).
 
 ---
 
+## Terms of use
+
+The code is MIT-licensed (see below). Using it with the Watchtower service is also governed by the [Watchtower Terms of Service](https://watchtowers.cloud/terms#agent), which you accept when you create a Watchtower account. Under those terms, notwithstanding the MIT license, you agree to:
+
+- use the agent only with the Watchtower service;
+- send the monitoring data it collects only to Watchtower;
+- install it only on systems you own or operate, or are authorized to monitor.
+
+The terms also forbid using the service to build a competing product, benchmarking it other than for internal evaluation, and reverse engineering its non-open-source parts.
+
 ## License
 
 MIT. Portions derived from Laravel Nightwatch:
