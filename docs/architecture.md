@@ -41,7 +41,7 @@ Nightwatch-compatible job payload keys (for trace correlation) may still appear 
 
 `agent/src/agent.php` is the process entrypoint (also compiled into the phar).
 
-1. Requires `WATCHTOWER_TOKEN` and `WATCHTOWER_BASE_URL`.
+1. Requires `WATCHTOWER_TOKEN`. `WATCHTOWER_BASE_URL` defaults to `https://api.watchtowers.cloud` and only needs setting for another platform.
 2. Listens on `WATCHTOWER_INGEST_URI` (Docker default `0.0.0.0:2407`).
 3. **`Server`** accepts one HELLO, issues `session_id`, then one PING or one `telemetry_batch`, ACKs, and closes the socket (one-shot session).
 4. **`IngestDetailsRepository`** POSTs `{}` to `{WATCHTOWER_BASE_URL}/api/agent-auth` with `Authorization: Bearer {token}` and expects JSON: `token`, `expires_in`, `refresh_in`, `ingest_url`.
@@ -66,7 +66,7 @@ Published as `config/watchtower.php`. Important env vars:
 | --- | --- |
 | `WATCHTOWER_ENABLED` | Master switch |
 | `WATCHTOWER_TOKEN` | Platform token; hashed for HELLO `token_hash` |
-| `WATCHTOWER_BASE_URL` | Platform origin (required for sidecar auth) |
+| `WATCHTOWER_BASE_URL` | Platform origin for sidecar auth (default `https://api.watchtowers.cloud`) |
 | `WATCHTOWER_INGEST_URI` | Sidecar listen / client connect address |
 | `WATCHTOWER_DEPLOY` | Deploy id for `watchtower:deploy` |
 | Sampling / filter / redact | See `resources/boost/skills/configure-watchtower/` |

@@ -26,7 +26,7 @@ Do not rewrite these to “make the protocol Watchtower.” Event JSON (`t` and 
 - HELLO / WELCOME / telemetry_batch / PING / ACK / ERROR
 - Sidecar enforcement: session id, sequence `1`, batch version `1`, max batch `500`
 - Config and env prefix `WATCHTOWER_*`
-- Destination: `WATCHTOWER_BASE_URL` only (no Nightwatch Cloud default)
+- Destination: the Watchtower platform (`https://api.watchtowers.cloud` by default, `WATCHTOWER_BASE_URL` to override); no Nightwatch Cloud default
 - Composer authors: Watchtower
 - Boxed `agent.phar` + `signature.txt` produced in CI and committed on `1.x` (human PRs and `1.x` pushes; Dependabot PRs do not write the phar)
 

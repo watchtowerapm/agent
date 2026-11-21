@@ -10,6 +10,8 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Watchtower\Laravel\GracefulCliOutputExceptionHandler;
 
+use function config;
+use function getenv;
 use function is_file;
 
 /**
@@ -54,6 +56,8 @@ final class AgentCommand extends Command
             //
         }
 
+        $this->exposeConfigToAgent();
+
         $refreshToken = $this->token;
 
         $listenOn = $this->option('listen-on') ?? $this->ingestUri;
@@ -80,6 +84,32 @@ final class AgentCommand extends Command
 
         if (isset($handler)) {
             $handler->shuttingDown();
+        }
+    }
+
+    /**
+     * The agent reads its settings from the process environment. With a cached config
+     * (`php artisan optimize` / `config:cache`) Laravel no longer loads `.env`, so the values only
+     * exist in the config: copy them over. Variables already set in the environment (shell,
+     * Supervisor, Docker) keep priority.
+     */
+    private function exposeConfigToAgent(): void
+    {
+        $settings = [
+            'WATCHTOWER_BASE_URL' => config('watchtower.base_url'),
+            'WATCHTOWER_AGENT_LOG_LEVEL' => config('watchtower.agent.log_level'),
+            'WATCHTOWER_SPOOL_PATH' => config('watchtower.agent.spool_path'),
+            'WATCHTOWER_SPOOL_MAX_MB' => config('watchtower.agent.spool_max_mb'),
+            'WATCHTOWER_SPOOL_MAX_AGE_HOURS' => config('watchtower.agent.spool_max_age_hours'),
+        ];
+
+        foreach ($settings as $name => $value) {
+            if ($value === null || isset($_SERVER[$name]) || getenv($name) !== false) {
+                continue;
+            }
+
+            // An empty spool path is meaningful (it turns the spool off), so strings are kept as is.
+            $_SERVER[$name] = (string) $value; // @phpstan-ignore cast.string
         }
     }
 }

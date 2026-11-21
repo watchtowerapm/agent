@@ -1,5 +1,11 @@
 # Release Notes
 
+## 1.1.2 - 2026-11-21
+
+- The agent and `watchtower:deploy` now work after `php artisan optimize` / `config:cache`. With a cached config Laravel no longer loads `.env`, so `WATCHTOWER_BASE_URL` (and the agent's log-level and spool settings) never reached the agent, which stopped with "Please configure the [WATCHTOWER_BASE_URL] environment variable". `watchtower:agent` now passes these settings from the config; variables set in the shell, Supervisor or Docker still take priority.
+- `WATCHTOWER_BASE_URL` is optional: it defaults to `https://api.watchtowers.cloud`. Set it only to point the agent at another Watchtower platform (staging or self-hosted).
+- New config keys: `base_url`, and `agent.log_level`, `agent.spool_path`, `agent.spool_max_mb`, `agent.spool_max_age_hours` (same environment variables as before). Apps that published `config/watchtower.php` keep working; add the keys to use them with a cached config.
+
 ## 1.1.1 - 2026-11-19
 
 - Sidecar: when ingest cannot be reached (DNS, connection, TLS or timeout), it authenticates again on the next attempt, at most once a minute, instead of reusing the cached ingest URL and token until the hourly refresh. A corrected ingest URL now reaches running agents within about a minute.
