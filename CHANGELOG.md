@@ -1,5 +1,15 @@
 # Release Notes
 
+## 1.3.0 - 2026-11-21
+
+### What's Changed
+* Add a one-click release workflow and one-change-per-PR conventions by @RealMrHex in https://github.com/watchtowerapm/agent/pull/12
+* Sign the app ↔ sidecar session with HMAC by @RealMrHex in https://github.com/watchtowerapm/agent/pull/13
+* Write batches to disk before the sidecar acknowledges them by @RealMrHex in https://github.com/watchtowerapm/agent/pull/14
+
+
+**Full Changelog**: https://github.com/watchtowerapm/agent/compare/v1.2.1...v1.3.0
+
 ## 1.2.1 - 2026-11-21
 
 - Agent: `psr/http-message` 2.0 (from 1.1), still resolved for PHP 8.2. Internal to the agent binary; no change in behaviour.
