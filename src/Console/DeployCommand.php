@@ -12,6 +12,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 
 use function config;
+use function getenv;
 use function is_string;
 
 /**
@@ -59,12 +60,8 @@ final class DeployCommand extends Command
             return 0;
         }
 
-        $baseUrl = $_SERVER['WATCHTOWER_BASE_URL'] ?? '';
-        if ($baseUrl === '') {
-            $this->components->error('Please configure the [WATCHTOWER_BASE_URL] environment variable to your Watchtower platform origin.');
-
-            return 0;
-        }
+        // From config first, so a cached config (`php artisan optimize`) still has it.
+        $baseUrl = (string) (config('watchtower.base_url') ?: ($_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: 'https://api.watchtowers.cloud'));
 
         try {
             Http::connectTimeout(5)

@@ -21,6 +21,7 @@ use function getenv;
 use function gethostname;
 use function hash;
 use function is_file;
+use function is_string;
 use function preg_replace;
 use function realpath;
 use function round;
@@ -58,8 +59,11 @@ $connectionIdleTimeout ??= (float) Protocol::IDLE_TIMEOUT_SECONDS;
 $refreshToken ??= $_SERVER['WATCHTOWER_TOKEN'] ?? getenv('WATCHTOWER_TOKEN') ?: '';
 /** @var string $refreshToken */
 /** @var ?string $baseUrl */
-$baseUrl ??= $_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: '';
+// The Watchtower platform; WATCHTOWER_BASE_URL overrides it (self-hosted or staging platforms).
+$baseUrl ??= $_SERVER['WATCHTOWER_BASE_URL'] ?? getenv('WATCHTOWER_BASE_URL') ?: 'https://api.watchtowers.cloud';
 /** @var string $baseUrl */
+/** @var ?string $settingsPath Where to write the panel's sampling settings for the app; null or '' turns it off. */
+$settingsPath ??= $_SERVER['WATCHTOWER_SETTINGS_PATH'] ?? getenv('WATCHTOWER_SETTINGS_PATH') ?: null;
 /** @var ?string $listenOn */
 $listenOn ??= $_SERVER['WATCHTOWER_INGEST_URI'] ?? '127.0.0.1:2407';
 /** @var string $listenOn */
@@ -122,12 +126,6 @@ $error = static function (string $message) use ($silent, $stdErr): void {
     }
 };
 
-if ($baseUrl === '') {
-    $error('Please configure the [WATCHTOWER_BASE_URL] environment variable to your Watchtower platform origin.');
-
-    return;
-}
-
 /*
  * Internal state...
  */
@@ -189,11 +187,20 @@ $ingestDetailsBrowser = $browserFactory(
     baseUrl: rtrim($baseUrl, '/'),
 );
 
+$settingsFile = is_string($settingsPath) && $settingsPath !== '' ? new SettingsFile($settingsPath) : null;
+
 $ingestDetails = new IngestDetailsRepository(
     loop: $loop,
     browser: $ingestDetailsBrowser,
     clock: $clock,
-    onAuthenticationSuccess: static fn (IngestDetails $ingestDetails, float $duration) => $info('Authentication successful ['.round($duration, 3).'s]'),
+    onAuthenticationSuccess: static function (IngestDetails $ingestDetails, float $duration) use ($info, $settingsFile): void {
+        $info('Authentication successful ['.round($duration, 3).'s]');
+
+        // Old platforms don't send settings: leave the app's file alone then.
+        if ($settingsFile !== null && $ingestDetails->settings !== null && $settingsFile->apply($ingestDetails->settings)) {
+            $info('Sampling settings from the panel updated');
+        }
+    },
     onAuthenticationError: static fn (string $message, float $duration) => $error('Authentication failed ['.round($duration, 3).'s]: '.$message),
     onUnderQuota: static function () use (&$ingest) {
         /** @var Ingest $ingest */
