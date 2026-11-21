@@ -214,6 +214,7 @@ class IngestDetailsRepository
             ingestUrl: $data['ingest_url'],
             refreshIn: $data['refresh_in'],
             expiresAt: $data['expires_in'] + $this->clock->time(),
+            settings: is_array($data['settings'] ?? null) ? $data['settings'] : null,
         );
     }
 

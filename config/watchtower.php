@@ -30,6 +30,11 @@ return [
         'log_level' => env('WATCHTOWER_LOG_LEVEL', env('LOG_LEVEL', 'debug')),
     ],
 
+    // Sampling and filters chosen in the Watchtower panel: the agent writes them to
+    // bootstrap/cache/watchtower-settings.php and they override the values below. Turn off to
+    // keep only this file's settings.
+    'remote_settings' => env('WATCHTOWER_REMOTE_SETTINGS', true),
+
     // The agent process (`php artisan watchtower:agent`).
     'agent' => [
         'log_level' => env('WATCHTOWER_AGENT_LOG_LEVEL'),
