@@ -9,6 +9,7 @@ use SensitiveParameter;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Throwable;
 use Watchtower\Laravel\GracefulCliOutputExceptionHandler;
+use Watchtower\Laravel\RemoteSettings;
 
 use function config;
 use function getenv;
@@ -77,6 +78,9 @@ final class AgentCommand extends Command
         $quiet = $this->option('quiet') ?: null;
 
         $verbose = $this->option('verbose') ?: null;
+
+        // Where the panel's sampling settings go for the app to read at boot.
+        $settingsPath = config('watchtower.remote_settings', true) ? RemoteSettings::path($app) : null;
 
         $phar = __DIR__.'/../../agent/build/agent.phar';
         $source = __DIR__.'/../../agent/src/agent.php';

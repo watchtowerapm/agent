@@ -206,6 +206,9 @@ final class WatchtowerServiceProvider extends ServiceProvider
         $this->config = $this->app->make(Repository::class);
 
         $this->watchtowerConfig = $this->config->get('watchtower') ?? []; // @phpstan-ignore assign.propertyType
+
+        // Sampling and filters chosen in the panel, written by the agent, win over the app's own.
+        $this->watchtowerConfig = RemoteSettings::merge($this->watchtowerConfig, RemoteSettings::path($this->app)); // @phpstan-ignore assign.propertyType, argument.type
     }
 
     private function registerBindings(): void

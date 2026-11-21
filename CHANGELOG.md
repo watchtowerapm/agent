@@ -1,5 +1,11 @@
 # Release Notes
 
+## 1.2.0 - 2026-11-21
+
+- Sampling rates and event filters can be set per environment in the Watchtower panel, without editing `.env` or redeploying. The agent receives them when it authenticates and writes them to `bootstrap/cache/watchtower-settings.php` (only known keys with valid values, only when they change; removed when the panel has none). The package merges them over its config at boot: a plain `return [...]` file, so with opcache it costs next to nothing per request. Settings left empty in the panel keep the app's own values.
+- `WATCHTOWER_REMOTE_SETTINGS=false` (config `remote_settings`) ignores the panel's settings.
+- Agents running in a separate container from the app can't write the file; the app's own settings apply there. Point `WATCHTOWER_SETTINGS_PATH` at a shared path to use it anyway.
+
 ## 1.1.2 - 2026-11-21
 
 - The agent and `watchtower:deploy` now work after `php artisan optimize` / `config:cache`. With a cached config Laravel no longer loads `.env`, so `WATCHTOWER_BASE_URL` (and the agent's log-level and spool settings) never reached the agent, which stopped with "Please configure the [WATCHTOWER_BASE_URL] environment variable". `watchtower:agent` now passes these settings from the config; variables set in the shell, Supervisor or Docker still take priority.

@@ -60,6 +60,7 @@ WATCHTOWER_INGEST_URI=127.0.0.1:2407
 | `WATCHTOWER_TOKEN` | Yes for sidecar + HELLO hash | Platform bearer token |
 | `WATCHTOWER_BASE_URL` | No | Platform origin. Defaults to `https://api.watchtowers.cloud`; set it only for a self-hosted or staging platform |
 | `WATCHTOWER_INGEST_URI` | No | Where the app sends frames / sidecar listens |
+| `WATCHTOWER_REMOTE_SETTINGS` | No | Default `true`: apply sampling and filters set in the Watchtower panel (agent writes `bootstrap/cache/watchtower-settings.php`) |
 | `WATCHTOWER_ENABLED` | No | Default `true` |
 | `WATCHTOWER_DEPLOY` | For `watchtower:deploy` | Deploy identifier |
 
