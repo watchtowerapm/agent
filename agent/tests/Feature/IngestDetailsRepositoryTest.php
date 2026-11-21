@@ -888,10 +888,10 @@ class IngestDetailsRepositoryTest extends TestCase
         $loop
             ->assertRun([
                 new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
-                new Timer(interval: 10, runAt: 11, scheduledAt: 1, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+                new Timer(interval: 10, runAt: 11, scheduledAt: 1, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
                 new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
                 new Timer(interval: 3_601, runAt: 3_601, scheduledAt: 0, scheduledBy: $this->functionName()),
-                new Timer(interval: 10, runAt: 3_611, scheduledAt: 3_601, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+                new Timer(interval: 10, runAt: 3_611, scheduledAt: 3_601, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             ])
             ->assertPending([
                 new Timer(interval: 33, runAt: 3_633, scheduledAt: 3_600, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),

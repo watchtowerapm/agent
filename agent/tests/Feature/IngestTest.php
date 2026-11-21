@@ -11,6 +11,7 @@ use Tests\Response;
 use Tests\TcpServerFake;
 use Tests\TestCase;
 use Tests\Timer;
+use Watchtower\LaravelAgent\Journal;
 
 use function array_fill;
 use function gethostname;
@@ -64,7 +65,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -104,7 +105,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertSent([
             Request::ingest($records),
         ]);
-        // No 10 second batching timer was scheduled by Ingest::write.
+        // No 10 second batching timer was scheduled by Ingest::settle.
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
@@ -141,7 +142,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -183,7 +184,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -221,7 +222,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -269,9 +270,9 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 11, runAt: 11, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -690,7 +691,7 @@ class IngestTest extends TestCase
             new Timer(interval: 2, runAt: 2, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertPending([
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
         ]);
         $ingestDetailsBrowser->assertSent([
@@ -732,7 +733,7 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -789,7 +790,7 @@ class IngestTest extends TestCase
             new Timer(interval: 3, runAt: 3, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertCanceled([
-            new Timer(interval: 10, canceledAt: 3, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, canceledAt: 3, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -891,10 +892,10 @@ class IngestTest extends TestCase
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 2, runAt: 2, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 3, runAt: 3, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 13, scheduledAt: 3, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 13, scheduledAt: 3, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertCanceled([
-            new Timer(interval: 10, canceledAt: 3, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, canceledAt: 3, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -941,9 +942,9 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 11, runAt: 11, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 22, runAt: 22, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertCanceled([
@@ -1003,9 +1004,9 @@ class IngestTest extends TestCase
             ])
             ->assertRun([
                 new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-                new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+                new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
                 new Timer(interval: 11, runAt: 11, scheduledAt: 0, scheduledBy: $this->functionName()),
-                new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+                new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
                 new Timer(interval: 22, runAt: 22, scheduledAt: 0, scheduledBy: $this->functionName()),
             ])
             ->assertCanceled([
@@ -1062,13 +1063,13 @@ class IngestTest extends TestCase
         $ingestBrowser->assertPending([]);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 11, runAt: 11, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 21, scheduledAt: 11, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 22, runAt: 22, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 900, runAt: 921, scheduledAt: 21, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
             new Timer(interval: 922, runAt: 922, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 932, scheduledAt: 922, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 932, scheduledAt: 922, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertCanceled([
             new Timer(interval: 3_600, canceledAt: 21, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -1116,7 +1117,7 @@ class IngestTest extends TestCase
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertPending([
-            new Timer(interval: 10, runAt: 11, scheduledAt: 1, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 11, scheduledAt: 1, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
         ]);
         $ingestDetailsBrowser->assertSent([
@@ -1160,7 +1161,7 @@ class IngestTest extends TestCase
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertCanceled([
-            new Timer(interval: 10, canceledAt: 1, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, canceledAt: 1, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: null, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -1253,7 +1254,7 @@ class IngestTest extends TestCase
         OUTPUT, $output);
         $loop->assertRun([
             new Timer(interval: 0, runAt: 0, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 10, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 11, runAt: 11, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 5, runAt: 15, scheduledAt: 10, scheduledBy: 'Tests\Response::toPromise'),
         ]);
@@ -1363,6 +1364,75 @@ class IngestTest extends TestCase
         ]);
         $ingestBrowser->assertPending([]);
         $this->assertSame([], glob("{$spoolPath}/*.gz") ?: []);
+        @rmdir($spoolPath);
+    }
+
+    public function test_it_sends_batches_a_crashed_run_had_acknowledged(): void
+    {
+        $spoolPath = sys_get_temp_dir().'/watchtower-journal-feature-'.uniqid();
+        // A previous sidecar acknowledged this batch, then died before sending it.
+        $crashed = new Journal($spoolPath);
+        $crashed->append('[{"t":"request"}]');
+        unset($crashed);
+        $loop = new LoopFake(runForSeconds: 6);
+        $ingestDetailsBrowser = new BrowserFake([
+            Response::jwt(),
+        ]);
+        $ingestBrowser = new BrowserFake([
+            Response::ingested(),
+        ]);
+
+        [$output, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            spoolPath: $spoolPath,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $this->assertLogMatches(<<<'OUTPUT'
+        {date} {info} Recovered \[1\] acknowledged batches a previous run had not sent; sending them shortly
+        {date} {info} Authentication successful {duration}
+        {date} {info} Ingest successful {duration}
+        OUTPUT, $output);
+        $ingestBrowser->assertSent([
+            Request::ingest([['t' => 'request']]),
+        ]);
+        $this->assertSame([], glob("{$spoolPath}/*.gz") ?: []);
+        $this->assertSame([], glob("{$spoolPath}/journal-*") ?: []);
+        @rmdir($spoolPath);
+    }
+
+    public function test_an_acknowledged_batch_leaves_no_journal_once_it_is_sent(): void
+    {
+        $spoolPath = sys_get_temp_dir().'/watchtower-journal-feature-'.uniqid();
+        $loop = new LoopFake(runForSeconds: 11);
+        $server = new TcpServerFake;
+        $ingestDetailsBrowser = new BrowserFake([
+            Response::jwt(),
+        ]);
+        $ingestBrowser = new BrowserFake([
+            Response::ingested(),
+        ]);
+        $loop->addTimer(0, $server->pendingConnection([['t' => 'request']]));
+
+        [, $e] = $this->runAgent(
+            via: 'source',
+            ingestDetailsBrowser: $ingestDetailsBrowser,
+            ingestBrowser: $ingestBrowser,
+            loop: $loop,
+            server: $server,
+            spoolPath: $spoolPath,
+        );
+
+        $this->assertNull($e, $e?->getMessage() ?? '');
+        $ingestBrowser->assertSent([
+            Request::ingest([['t' => 'request']]),
+        ]);
+        // Only this run's (now released) lock is left; the next start tidies it away.
+        $this->assertSame([], glob("{$spoolPath}/journal-*/{current,*.sealed}", GLOB_BRACE) ?: []);
+        $this->assertSame([], (new Journal($spoolPath))->recover());
         @rmdir($spoolPath);
     }
 

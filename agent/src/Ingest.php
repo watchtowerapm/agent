@@ -14,6 +14,7 @@ use Watchtower\LaravelAgent\Contracts\Browser;
 use Watchtower\LaravelAgent\Contracts\Clock;
 
 use function array_key_last;
+use function array_shift;
 use function call_user_func;
 use function count;
 use function gzencode;
@@ -45,6 +46,14 @@ class Ingest
 
     private bool $paused = false;
 
+    /**
+     * Buffers cut off in accept() (the next batch would have made them too big), each with its
+     * sealed journal file, waiting for settle() to compress and send them.
+     *
+     * @var list<array{0: string, 1: ?string}>
+     */
+    private array $cut = [];
+
     /** Seconds before the next attempt to resend spooled payloads; grows while they fail. */
     private float $drainBackoff = self::DRAIN_MIN_BACKOFF;
 
@@ -70,6 +79,7 @@ class Ingest
         private Closure $onOverQuota,
         private ?Spool $spool = null,
         private ?Closure $onSpooled = null,
+        private ?Journal $journal = null,
     ) {
         $this->buffer = $this->streamBufferBackup = $buffer;
 
@@ -79,15 +89,73 @@ class Ingest
         }
     }
 
+    /**
+     * Move batches a previous run had acknowledged but not sent into the spool. Returns how
+     * many were recovered.
+     */
+    public function recoverJournal(): int
+    {
+        if ($this->journal === null || $this->spool === null) {
+            return 0;
+        }
+
+        $recovered = 0;
+
+        foreach ($this->journal->recover() as $payload) {
+            $compressed = gzencode($payload);
+
+            if ($compressed !== false && $this->spool->put($compressed)) {
+                $recovered++;
+            }
+        }
+
+        if ($recovered > 0) {
+            $this->scheduleDrain(self::DRAIN_MIN_BACKOFF);
+        }
+
+        return $recovered;
+    }
+
+    /**
+     * Take one batch (a JSON list): accept() it, then settle() it.
+     */
     public function write(string $payload): void
+    {
+        $this->accept($payload);
+        $this->settle($payload);
+    }
+
+    /**
+     * Keep one batch (a JSON list): on disk with a journal, and in the buffer. Cheap, so the
+     * server calls it before acknowledging the batch; the upload decision waits for settle().
+     */
+    public function accept(string $payload): void
     {
         if ($this->buffer->isNotEmpty() && $this->buffer->willExceedThresholdWith($payload)) {
             $this->cancelDigestDelay();
 
-            $this->digest();
+            $this->cut[] = $this->cutBuffer();
+        }
+
+        if (! $this->paused) {
+            $this->journal?->append($payload);
         }
 
         $this->buffer->write($payload);
+    }
+
+    /**
+     * Decide whether a batch accept()ed earlier should be uploaded now. The server calls it once
+     * the acknowledgement has gone out, so compressing and sending never delay the app.
+     */
+    public function settle(string $payload): void
+    {
+        $this->sendCut();
+
+        // Already sent with an earlier batch.
+        if (! $this->buffer->isNotEmpty()) {
+            return;
+        }
 
         // Exceptions skip the batching delay so they reach the dashboard right away. Records
         // arrive as compact JSON, so an exception record always contains this exact marker
@@ -119,6 +187,7 @@ class Ingest
     public function forceDigest(): PromiseInterface
     {
         $this->cancelDigestDelay();
+        $this->sendCut();
 
         if ($this->buffer->isNotEmpty()) {
             $this->digest();
@@ -133,6 +202,13 @@ class Ingest
         $this->buffer = new NullBuffer;
 
         $this->streamBufferBackup->flush();
+        $this->journal?->discard();
+
+        foreach ($this->cut as [, $sealed]) {
+            $this->journal?->release($sealed);
+        }
+
+        $this->cut = [];
     }
 
     public function resumeIngestion(): void
@@ -147,12 +223,39 @@ class Ingest
 
     private function digest(): void
     {
-        $payload = $this->buffer->pull();
+        $this->upload(...$this->cutBuffer());
+    }
+
+    /**
+     * Take the buffer and the journal lines for exactly that payload (cheap: no compression).
+     *
+     * @return array{0: string, 1: ?string}
+     */
+    private function cutBuffer(): array
+    {
+        return [$this->buffer->pull(), $this->journal?->seal()];
+    }
+
+    private function sendCut(): void
+    {
+        while (($next = array_shift($this->cut)) !== null) {
+            $this->upload(...$next);
+        }
+    }
+
+    /**
+     * Compress and upload one payload. The sealed journal file is released once the upload is
+     * done: delivered, kept in the spool, or dropped on purpose.
+     */
+    private function upload(string $payload, ?string $sealed): void
+    {
 
         if (count($this->concurrentRequests) >= $this->concurrentRequestLimit) {
             $compressed = $this->spool !== null ? gzencode($payload) : false;
 
             if ($compressed !== false && $this->keep($compressed)) {
+                $this->journal?->release($sealed);
+
                 if ($this->onSpooled !== null) {
                     call_user_func($this->onSpooled, $this->spool->count());
                 }
@@ -160,6 +263,7 @@ class Ingest
                 return;
             }
 
+            $this->journal?->release($sealed);
             call_user_func($this->onIngestError, "Exceeded concurrent request limit. [{$this->concurrentRequestLimit}] requests are processing", 0.0);
 
             return;
@@ -169,6 +273,7 @@ class Ingest
         $payload = gzencode($payload);
 
         if ($payload === false) {
+            $this->journal?->release($sealed);
             call_user_func($this->onIngestError, 'Unable to compress payload.', 0.0);
 
             return;
@@ -228,8 +333,10 @@ class Ingest
             }
 
             return null;
-        }))->finally(function () use ($currentRequestKey): void {
+        }))->finally(function () use ($currentRequestKey, $sealed): void {
             unset($this->concurrentRequests[$currentRequestKey]);
+
+            $this->journal?->release($sealed);
         });
     }
 

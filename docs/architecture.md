@@ -45,7 +45,7 @@ Nightwatch-compatible job payload keys (for trace correlation) may still appear 
 2. Listens on `WATCHTOWER_INGEST_URI` (default `127.0.0.1:2407`; the Docker image uses `0.0.0.0:2407` so other containers can reach it, so keep that port on a private network).
 3. **`Server`** checks the signed HELLO, issues `session_id` and a signed WELCOME, then accepts one signed PING or `telemetry_batch`, ACKs, and closes the socket (one-shot session).
 4. **`IngestDetailsRepository`** POSTs `{}` to `{WATCHTOWER_BASE_URL}/api/agent-auth` with `Authorization: Bearer {token}` and expects JSON: `token`, `expires_in`, `refresh_in`, `ingest_url`.
-5. **`Ingest` (sidecar)** gzip-POSTs accepted record JSON to `ingest_url`.
+5. **`Ingest` (sidecar)** journals each accepted batch to disk before the ACK (`Journal`), buffers it, and gzip-POSTs it to `ingest_url`. Failed uploads go to the `Spool` and are retried; on start, batches a crashed run had acknowledged are recovered from the journal into the spool.
 
 The sidecar sends a `watchtower-server` HTTP header (the host name) on auth and ingest requests. If ingest answers `401`, the sidecar drops its cached ingest token and authenticates again before the next batch.
 
