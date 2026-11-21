@@ -1,0 +1,130 @@
+name: Create release
+run-name: ${{ format('Create {0} release', inputs.version_type) }}
+
+# One click (Actions → Create release → Run workflow on 1.x): bumps version.txt and composer.json,
+# writes the release notes from the pull requests merged since the last tag into CHANGELOG.md,
+# commits "Bump version to vX.Y.Z", tags it and publishes the GitHub release. Packagist and the
+# Watchtower platform pick the tag up from their webhooks.
+#
+# Pushing to 1.x and creating v* tags uses the write deploy key (AGENT_DEPLOY_KEY), which both
+# rulesets let bypass; GITHUB_TOKEN cannot. Only GitHub-owned actions are used, plus the gh CLI.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "Version type"
+        required: true
+        default: "patch"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Exit early if not on 1.x
+        if: github.ref != 'refs/heads/1.x'
+        run: |
+          echo "::error::Releases are created from 1.x only."
+          exit 1
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          ref: 1.x
+          fetch-depth: 0
+          persist-credentials: true
+          ssh-key: ${{ secrets.AGENT_DEPLOY_KEY }}
+
+      - name: Bump version
+        id: version
+        shell: bash
+        run: |
+          current=$(tr -d '[:space:]' < version.txt)
+          if [[ ! $current =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::version.txt is not a version: '$current'"
+            exit 1
+          fi
+          major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
+          case "${{ inputs.version_type }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          next="$major.$minor.$patch"
+          if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
+            echo "::error::Tag v$next already exists."
+            exit 1
+          fi
+          echo "Was $current, now $next"
+          echo "$next" > version.txt
+          sed -i -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+\"/\"version\": \"$next\"/" composer.json
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "previous=v$current" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          args=(-f tag_name="v${{ steps.version.outputs.version }}" -f target_commitish=1.x)
+          if git rev-parse -q --verify "refs/tags/${{ steps.version.outputs.previous }}" >/dev/null; then
+            args+=(-f previous_tag_name="${{ steps.version.outputs.previous }}")
+          fi
+          gh api "repos/${{ github.repository }}/releases/generate-notes" "${args[@]}" --jq .body > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+
+      - name: Update changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          NOTES: ${{ runner.temp }}/notes.md
+        run: |
+          python3 - <<'PY'
+          import datetime, os, re
+          version = os.environ["VERSION"]
+          notes = open(os.environ["NOTES"], encoding="utf-8").read().strip()
+          # GitHub's notes start with "## What's Changed": nest them under the version heading.
+          notes = re.sub(r"^## ", "### ", notes, flags=re.M)
+          section = f"## {version} - {datetime.date.today().isoformat()}\n\n{notes}\n\n"
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          head = "# Release Notes\n\n"
+          text = head + section + text[len(head):] if text.startswith(head) else section + text
+          open("CHANGELOG.md", "w", encoding="utf-8").write(text)
+          PY
+          sed -i -E "s/agent \*\*[0-9]+\.[0-9]+\.[0-9]+\*\*/agent **$VERSION**/" docs/README.md
+
+      - name: Commit, tag and push
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.txt composer.json CHANGELOG.md docs/README.md
+          git commit -m "Bump version to v$VERSION"
+          git tag -a "v$VERSION" -m "v$VERSION"
+          git push origin HEAD:1.x "v$VERSION"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --verify-tag \
+            --latest
