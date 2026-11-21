@@ -36,7 +36,8 @@ class Server
      * @param  (Closure(): mixed)  $onServerStarted
      * @param  (Closure(string $message): mixed)  $onServerError
      * @param  (Closure(string $message): mixed)  $onConnectionError
-     * @param  (Closure(string $payload): mixed)  $onPayloadReceived
+     * @param  (Closure(string $payload): mixed)  $onPayloadReceived  called before the ACK: keep the batch
+     * @param  (Closure(string $payload): mixed)|null  $onPayloadAcknowledged  called once the ACK has gone out
      * @param  (Closure(): mixed)  $onInvalidPayloadVersion
      * @param  (Closure(): mixed)  $onInvalidTokenHash
      * @param  (Closure(): mixed)|null  $onOutdatedClient  an app still on protocol 1 (it has the token but can't sign)
@@ -56,6 +57,7 @@ class Server
         private ?LoopInterface $loop = null,
         private float $idleTimeout = 0.0,
         private ?Closure $onOutdatedClient = null,
+        private ?Closure $onPayloadAcknowledged = null,
     ) {
         //
     }
@@ -70,8 +72,8 @@ class Server
             $clientNonce = '';
             $serverNonce = '';
             $expectedSequence = 1;
-            $recordsJson = null;
             $finished = false;
+            $accepted = null;
             $idleTimer = $this->startIdleTimer($connection, $finished);
 
             $finish = function () use (&$finished, &$idleTimer): void {
@@ -83,7 +85,7 @@ class Server
                 }
             };
 
-            $connection->on('data', function (string $chunk) use ($connection, $server, $frames, &$sessionId, &$clientNonce, &$serverNonce, &$expectedSequence, &$recordsJson, &$finished, $finish): void {
+            $connection->on('data', function (string $chunk) use ($connection, $server, $frames, &$sessionId, &$clientNonce, &$serverNonce, &$expectedSequence, &$finished, &$accepted, $finish): void {
                 if ($finished) {
                     return;
                 }
@@ -227,7 +229,12 @@ class Server
                         return;
                     }
 
-                    $recordsJson = $decoded === [] ? null : $records;
+                    // Keep the batch (on disk, with a journal) before acknowledging it.
+                    if ($decoded !== []) {
+                        call_user_func($this->onPayloadReceived, $records);
+                        $accepted = $records;
+                    }
+
                     $this->ack($connection, $expectedSequence, count($decoded));
                     $finish();
 
@@ -235,18 +242,17 @@ class Server
                 }
             });
 
-            $connection->on('close', function () use ($frames, &$recordsJson, &$finished, $finish): void {
+            $connection->on('close', function () use ($frames, &$finished, &$accepted, $finish): void {
                 $completed = $finished;
                 $finish();
 
-                if (! $completed && ! $frames->isEmpty()) {
-                    call_user_func($this->onConnectionError, "Incomplete payload received. Buffer: [{$frames->leftover()}]");
-
-                    return;
+                // The ACK has been written by now: uploading can't delay the app any more.
+                if (is_string($accepted) && $this->onPayloadAcknowledged !== null) {
+                    call_user_func($this->onPayloadAcknowledged, $accepted);
                 }
 
-                if (is_string($recordsJson)) {
-                    call_user_func($this->onPayloadReceived, $recordsJson);
+                if (! $completed && ! $frames->isEmpty()) {
+                    call_user_func($this->onConnectionError, "Incomplete payload received. Buffer: [{$frames->leftover()}]");
                 }
             });
 

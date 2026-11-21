@@ -202,6 +202,10 @@ Sidecar → client, then close.
 
 The SDK requires `type=ack`, matching `sequence`, and `rejected === 0`. Any failure while sending is reported through `Watchtower::unrecoverableExceptionOccurred()` and never thrown into the application.
 
+**What an ACK means.** With the spool on (the default), the sidecar appends the batch to its journal on disk before it sends the ACK (`agent/src/Journal.php`). The journal lines are removed once the upload they went into is done: delivered, kept in the spool after a failure, or dropped on purpose (rejected by ingest, over quota, ingestion paused). If the sidecar stops before that, the next start moves the journalled batches into the spool and sends them. Lines are flushed to the operating system but not fsync'd, so this covers a sidecar crash or kill, not a power loss. With the spool off (`WATCHTOWER_SPOOL_PATH=""`) there is no journal and an ACK only means the batch is in memory.
+
+Each sidecar journals into its own `journal-*` directory inside the spool directory and holds a lock on it while running, so sidecars sharing a spool directory never recover each other's live batches.
+
 ## ERROR
 
 Sidecar → client, then close.

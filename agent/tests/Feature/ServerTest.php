@@ -50,7 +50,7 @@ class ServerTest extends TestCase
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
         ]);
         $loop->assertPending([
-            new Timer(interval: 10, runAt: 11, scheduledAt: 1, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 11, scheduledAt: 1, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
         ]);
         $ingestDetailsBrowser->assertSent([
@@ -179,7 +179,7 @@ class ServerTest extends TestCase
         $loop->assertRun([
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 20, runAt: 20, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 30, scheduledAt: 20, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 30, scheduledAt: 20, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -229,7 +229,7 @@ class ServerTest extends TestCase
         $loop->assertRun([
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 20, runAt: 20, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 30, scheduledAt: 20, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 30, scheduledAt: 20, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),
@@ -277,7 +277,7 @@ class ServerTest extends TestCase
         $loop->assertRun([
             new Timer(interval: 1, runAt: 1, scheduledAt: 0, scheduledBy: $this->functionName()),
             new Timer(interval: 20, runAt: 20, scheduledAt: 0, scheduledBy: $this->functionName()),
-            new Timer(interval: 10, runAt: 30, scheduledAt: 20, scheduledBy: 'Watchtower\LaravelAgent\Ingest::write'),
+            new Timer(interval: 10, runAt: 30, scheduledAt: 20, scheduledBy: 'Watchtower\LaravelAgent\Ingest::settle'),
         ]);
         $loop->assertPending([
             new Timer(interval: 3_600, runAt: 3_600, scheduledAt: 0, scheduledBy: 'Watchtower\LaravelAgent\IngestDetailsRepository::scheduleRefreshIn'),

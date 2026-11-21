@@ -234,6 +234,8 @@ $ingest = new Ingest(
     onOverQuota: static fn (string $message, float $duration) => $error('Ingest attempted ['.round($duration, 3).'s]: '.$message),
     spool: $spoolPath === '' ? null : new Spool($spoolPath, $spoolMaxBytes, $spoolMaxAge, $clock),
     onSpooled: static fn (int $waiting) => $info("Uploads busy: kept the payload to send later [{$waiting} waiting]"),
+    // Batches go to disk before they are acknowledged; without a spool there is nowhere to keep them.
+    journal: $spoolPath === '' ? null : new Journal($spoolPath),
 );
 
 $server = new Server(
@@ -243,7 +245,7 @@ $server = new Server(
     onServerStarted: static fn () => $info("Watchtower agent initiated: Listening on [{$listenOn}]; Version [{$packageVersion}]"),
     onServerError: static fn (string $message) => $error("Server error: {$message}"),
     onConnectionError: static fn (string $message) => $error("Connection error: {$message}"),
-    onPayloadReceived: $ingest->write(...),
+    onPayloadReceived: $ingest->accept(...),
     onInvalidPayloadVersion: static function () use ($info, $loop, $ingest) {
         $info('Incoming payload version has changed');
 
@@ -256,6 +258,7 @@ $server = new Server(
     onInvalidTokenHash: static fn () => $error('Incoming token hash mismatch! Check your application/agent configuration.'),
     loop: $loop,
     idleTimeout: $connectionIdleTimeout,
+    onPayloadAcknowledged: $ingest->settle(...),
     onOutdatedClient: static fn () => $error('Refused data from an application still running an older Watchtower agent. Restart PHP-FPM, Octane and your queue workers (php artisan queue:restart) so they load the new version.'),
 );
 
@@ -284,6 +287,10 @@ $checkSignature = new CheckSignature(
  */
 
 $server->start();
+
+if (($recovered = $ingest->recoverJournal()) > 0) {
+    $info("Recovered [{$recovered}] acknowledged batches a previous run had not sent; sending them shortly");
+}
 
 $ingestDetails->hydrate();
 
